@@ -143,11 +143,32 @@ class DreamJournalAnalyzer:
             prompt = PromptTemplate(
                 template="""
                 {personality}
-                Analyze the following journal entry holistically. Follow the instructions and format your response to match the format instructions.
+                Analyze the following dream journal entry holistically. Consider the FULL RANGE of emotions present.
+                
+                Choose the PRIMARY emotion from these options: joy, sadness, anger, fear, surprise, disgust, anxiety, contentment, excitement, melancholy
+                
+                Do NOT default to excitement - carefully consider which emotion best represents the overall feeling of the dream.
+
+                Examples of mood analysis:
+                - Flying dreams often indicate "joy" or "contentment"  
+                - Being chased indicates "fear" or "anxiety"
+                - Losing something indicates "sadness" or "melancholy"
+
+                Analyze the following dream journal entry and return ONLY a valid JSON response with these exact fields:
+            
+                {{
+                    "mood": "choose one: joy, sadness, anger, fear, surprise, disgust, anxiety, contentment, excitement, melancholy",
+                    "summary": "brief summary of the dream",
+                    "negative": true or false,
+                    "subject": "creative title for the dream", 
+                    "color": "hex color code representing the mood",
+                    "interpretation": "5-6 sentence analysis with song and snack suggestions",
+                    "sentiment_score": integer from -10 to 10
+                }}
                 
                 {format_instructions}
 
-                Journal Entry:
+                Dream Journal Entry:
                 {content}
                 """,
                 input_variables=["content", "personality"],
@@ -159,12 +180,15 @@ class DreamJournalAnalyzer:
             
             # Get analysis from LLM
             model = ChatOpenAI(temperature=0, model_name='gpt-3.5-turbo')
+            # In analyze_entry method, after model.invoke():
             result = model.invoke(formatted_prompt)
-            result = result.content
-            
+            result_content = result.content
+            print(f"Raw LLM output: {result_content}")  # Debug line
+
             # Parse the result
-            parsed_result = parser.parse(result)
-            
+            parsed_result = parser.parse(result_content)
+            print(f"Parsed mood: {parsed_result.mood}")  # Debug line
+                                    
             # Set the color based on mood
             parsed_result.color = get_emotion_color(parsed_result.mood)
             
