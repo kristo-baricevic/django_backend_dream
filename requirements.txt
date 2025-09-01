@@ -10,3 +10,7 @@ fastapi
 uvicorn
 python-dotenv
 pypdf==4.0.1
+Django>=4.2,<4.3
+djangorestframework>=3.15
+django-cors-headers>=4.3
+psycopg2

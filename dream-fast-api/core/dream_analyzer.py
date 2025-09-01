@@ -255,7 +255,7 @@ class DreamJournalAnalyzer:
         
         # Stage 1: Extract themes and search for specific symbols
         print(f"Stage 1: Extracting and searching dream themes...")
-        dream_themes = self.extract_dream_elements(entries)
+        dream_themes = await self.extract_dream_elements(entries)
         print(f"Extracted themes: {dream_themes}")
         theme_docs = await self.knowledge_base.search_relevant_knowledge(dream_themes, k=2)
         all_knowledge_docs.extend(theme_docs)
@@ -298,27 +298,44 @@ class DreamJournalAnalyzer:
             print(f"\n=== Q&A ANALYSIS WITH KNOWLEDGE BASE ===")
             print(f"Question: {question}")
             print(f"Analyzing {len(entries)} journal entries")
-            
-            # Convert entries to LangChain Documents
-            docs = [
-                Document(
-                    page_content=entry.content,
-                    metadata={"source": entry.id, "date": entry.created_at.isoformat()}
-                )
-                for entry in entries
-            ]
-            
-            if not docs:
+
+            if not entries:
                 raise ValueError("No journal entries provided")
-            
-            # Create vector store from documents
-            vectorstore = FAISS.from_documents(docs, self.embeddings)
-            
-            print(f"Created vector store from {len(docs)} journal entries")
-            
+
             # Search knowledge base for context
             print(f"Searching knowledge base for additional context...")
-            knowledge_docs = await self.knowledge_base.search_relevant_knowledge(question, k=2)
+            knowledge_docs = await self.enhanced_knowledge_search(entries)
+
+            # Build combined docs with unique IDs
+            context_docs = []
+            for i, entry in enumerate(entries):
+                context_docs.append(
+                    Document(
+                        page_content=entry.content,
+                        metadata={
+                            "doc_id": f"journal_{i}",
+                            "source": entry.id,
+                            "date": entry.created_at.isoformat()
+                        }
+                    )
+                )
+            for j, kdoc in enumerate(knowledge_docs):
+                context_docs.append(
+                    Document(
+                        page_content=kdoc.page_content,
+                        metadata={
+                            "doc_id": f"knowledge_{j}",
+                            "source": kdoc.metadata.get("source", "knowledge")
+                        }
+                    )
+                )
+
+            # Create vector store
+            vectorstore = FAISS.from_documents(context_docs, self.embeddings)
+            print(f"Created vector store from {len(context_docs)} documents "
+                  f"({len(entries)} journal entries + {len(knowledge_docs)} knowledge refs)")
+
+            # Build context string for logging
             knowledge_context = ""
             if knowledge_docs:
                 print(f"Adding {len(knowledge_docs)} knowledge references to Q&A context")
@@ -328,37 +345,45 @@ class DreamJournalAnalyzer:
                     knowledge_context += f"- {snippet}\n"
             else:
                 print("No relevant knowledge found - proceeding with journal entries only")
-            
+
+            context_text = "\n\n".join([d.page_content for d in context_docs])
+
+            if knowledge_docs:
+                context_text += "\n\n" + "\n\n".join([d.page_content for d in knowledge_docs])
+
+
             # Create QA chain with enhanced prompt
-            qa_prompt = f"""
+            qa_prompt = PromptTemplate(
+                input_variables=["context", "question"],
+                template="""
             Use the following context to answer questions about the dream journal entries.
-            {knowledge_context}
-            
-            Context: {{context}}
-            Question: {{question}}
+
+            {context}
+
+            Question: {question}
             Answer:"""
-            
-            print(f"Final Q&A prompt includes:")
-            print(f"  - Journal entries context: YES")
-            print(f"  - Knowledge base context: {'YES' if knowledge_context else 'NO'}")
-            print(f"  - Total context length: {len(qa_prompt)} characters")
-            
+            )
+
             qa_chain = RetrievalQA.from_chain_type(
                 llm=self.llm,
                 chain_type="stuff",
                 retriever=vectorstore.as_retriever(search_kwargs={"k": 4}),
-                chain_type_kwargs={"prompt": PromptTemplate.from_template(qa_prompt)}
+                chain_type_kwargs={
+                    "prompt": qa_prompt,
+                    "document_variable_name": "context"
+                },
+                input_key="question",
+                output_key="result"
             )
-            
-            print(f"Executing Q&A chain...")
-            # Get answer
-            result = qa_chain.run(question)
-            
-            print(f"Q&A analysis complete. Response length: {len(result)} characters")
+
+            result = qa_chain.invoke({"question": question, "context": context_text})
+
+            answer_text = result["result"]
+
             print(f"=== END Q&A ANALYSIS ===\n")
-            
-            return result
-            
+
+            return answer_text
+
         except Exception as error:
             print(f'Error in QA process: {error}')
             raise Exception('Failed to process QA request')
@@ -386,8 +411,10 @@ class DreamJournalAnalyzer:
             print(f"Searching knowledge base for: '{content[:100]}...'")
             
             # Search for relevant dream interpretation knowledge
-            knowledge_docs = await self.knowledge_base.search_relevant_knowledge(content, k=3)
-            
+            # knowledge_docs = await self.knowledge_base.search_relevant_knowledge(content, k=3)
+            fake_entry = JournalEntry(id="temp", created_at=datetime.now(), content=content)
+            knowledge_docs = await self.enhanced_knowledge_search([fake_entry])
+
             print(f"Found {len(knowledge_docs)} relevant knowledge documents")
             
             knowledge_context = ""
