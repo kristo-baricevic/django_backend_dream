@@ -1,0 +1,12 @@
+{
+    "cSpell.words": [
+        "dotenv",
+        "faiss",
+        "fastapi",
+        "langchain",
+        "numpy",
+        "openai",
+        "pydantic",
+        "tiktoken"
+    ]
+}
