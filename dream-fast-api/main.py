@@ -23,15 +23,14 @@ service: Optional[DreamJournalService] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Initialize the service when the app starts
     global service
     openai_api_key = os.getenv("OPENAI_API_KEY")
     if not openai_api_key:
         raise ValueError("OPENAI_API_KEY environment variable is required")
     
     service = DreamJournalService(openai_api_key)
+    await service.initialize()  # Add this line
     yield
-    # Cleanup if needed
     service = None
 
 # Initialize FastAPI app

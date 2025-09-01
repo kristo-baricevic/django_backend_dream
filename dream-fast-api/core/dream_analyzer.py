@@ -1,4 +1,5 @@
 import os
+import json
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from enum import Enum
@@ -8,8 +9,8 @@ from langchain_community.chat_models import ChatOpenAI
 from langchain.chains import RetrievalQA
 from langchain.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings
-from langchain.document_loaders import TextLoader
-from langchain.text_splitter import CharacterTextSplitter
+from langchain_community.document_loaders import PyPDFLoader, DirectoryLoader, TextLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.schema import Document
 from langchain.prompts import PromptTemplate
 from langchain.output_parsers import PydanticOutputParser
@@ -71,6 +72,112 @@ class JournalEntry(BaseModel):
     created_at: datetime
     content: str
 
+class DreamKnowledgeBase:
+    def __init__(self, files_directory: str, vector_directory: str, embeddings):
+        self.files_directory = files_directory
+        self.vector_directory = vector_directory
+        self.vectorstore = None
+        self.embeddings = embeddings
+        
+    async def initialize(self):
+        """Load existing vectors or create new ones."""
+        if os.path.exists(os.path.join(self.vector_directory, "index.faiss")):
+            print("Loading existing knowledge base...")
+            try:
+                self.vectorstore = FAISS.load_local(
+                    self.vector_directory, 
+                    self.embeddings,
+                    allow_dangerous_deserialization=True
+                )
+            except Exception as e:
+                print(f"Failed to load existing knowledge base: {e}")
+                await self.build_knowledge_base()
+        else:
+            print("Building knowledge base from files...")
+            await self.build_knowledge_base()
+    
+    async def build_knowledge_base(self):
+        """Process PDFs and text files to create FAISS index."""
+        if not os.path.exists(self.files_directory):
+            print(f"Knowledge directory {self.files_directory} not found")
+            return
+            
+        documents = []
+        
+        try:
+            # Load PDFs
+            pdf_loader = DirectoryLoader(
+                self.files_directory,
+                glob="**/*.pdf",
+                loader_cls=PyPDFLoader
+            )
+            pdf_docs = pdf_loader.load()
+            documents.extend(pdf_docs)
+            
+            # Load text files
+            txt_loader = DirectoryLoader(
+                self.files_directory,
+                glob="**/*.txt",
+                loader_cls=TextLoader,
+                loader_kwargs={'encoding': 'utf8'}
+            )
+            txt_docs = txt_loader.load()
+            documents.extend(txt_docs)
+            
+            if not documents:
+                print("No PDFs or text files found in knowledge base directory")
+                return
+                
+            print(f"Found {len(pdf_docs)} PDFs and {len(txt_docs)} text files")
+            
+            # Split documents into chunks
+            text_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=1000,
+                chunk_overlap=200,
+                length_function=len
+            )
+            chunks = text_splitter.split_documents(documents)
+            
+            # Create FAISS index
+            self.vectorstore = FAISS.from_documents(chunks, self.embeddings)
+            
+            # Save to disk
+            os.makedirs(self.vector_directory, exist_ok=True)
+            self.vectorstore.save_local(self.vector_directory)
+            print(f"Knowledge base created with {len(chunks)} chunks from {len(documents)} files")
+            
+        except Exception as e:
+            print(f"Error building knowledge base: {e}")
+    
+    async def search_relevant_knowledge(self, query: str, k: int = 3) -> List[Document]:
+        """Search for relevant passages."""
+        if not self.vectorstore:
+            print("⚠️  Knowledge base not initialized - no search performed")
+            return []
+        try:
+            print(f"🔍 Searching knowledge base with query: '{query[:100]}...'")
+            print(f"📚 Retrieving top {k} most relevant documents")
+            
+            results = self.vectorstore.similarity_search(query, k=k)
+            
+            if results:
+                print(f"✅ Found {len(results)} relevant documents:")
+                for i, doc in enumerate(results, 1):
+                    source = doc.metadata.get('source', 'Unknown')
+                    page = doc.metadata.get('page', 'N/A')
+                    print(f"   {i}. Source: {source} (Page: {page})")
+                    print(f"      FULL CONTENT RETRIEVED:")
+                    print(f"      ======================================")
+                    print(f"      {doc.page_content}")
+                    print(f"      ======================================")
+            else:
+                print("❌ No relevant documents found in knowledge base")
+            
+            return results
+        except Exception as e:
+            print(f"❌ Error searching knowledge base: {e}")
+            return []
+
 class DreamJournalAnalyzer:
     def __init__(self, openai_api_key: str):
         """Initialize the analyzer with OpenAI API key."""
@@ -78,12 +185,120 @@ class DreamJournalAnalyzer:
         self.llm = ChatOpenAI(temperature=0.8, model_name='gpt-3.5-turbo')
         self.embeddings = OpenAIEmbeddings()
         
+        # Initialize knowledge base
+        self.knowledge_base = DreamKnowledgeBase(
+            files_directory="knowledge_base/files",
+            vector_directory="knowledge_base/vectors",
+            embeddings=self.embeddings
+        )
+        
+    async def initialize_knowledge_base(self):
+        """Call this during service startup."""
+        await self.knowledge_base.initialize()
+
+    async def extract_dream_elements(self, entries: List[JournalEntry]) -> str:
+        """Extract key themes, symbols, and elements from dream entries."""
+        all_content = " ".join([entry.content.lower() for entry in entries])
+
+        # Load extracted dream symbols
+        try:
+            with open('core/extracted_dream_symbols.json', 'r') as f:
+                symbol_data = json.load(f)
+            dream_symbols = symbol_data.get('all_symbols_list', [])
+            print(f"Loaded {len(dream_symbols)} extracted symbols from knowledge base")
+        except FileNotFoundError:
+            print("Extracted symbols file not found, using default symbols")
+            dream_symbols = [
+                "flying", "falling", "water", "ocean", "river", "rain", "swimming",
+                "animals", "dog", "cat", "snake", "bird", "horse", "spider",
+                "death", "dying", "birth", "baby", "pregnancy",
+                "house", "home", "room", "door", "window", "stairs",
+                "car", "driving", "train", "airplane", "travel",
+                "chasing", "running", "hiding", "escaping", "trapped",
+                "fire", "burning", "smoke", "darkness", "light"
+            ]
+        except Exception as e:
+            print(f"Error loading extracted symbols: {e}")
+            dream_symbols = []
+
+        found_elements = [symbol for symbol in dream_symbols if symbol in all_content]
+
+        # Add emotional keywords
+        emotions = ["fear", "anxiety", "joy", "happiness", "sadness", "anger", "love", "hate", "worry", "peace"]
+        found_elements.extend([emotion for emotion in emotions if emotion in all_content])
+
+        result = " ".join(found_elements) if found_elements else "dreams symbols interpretation meaning"
+        print(f"Extracted dream elements: {result}")
+        return result
+
+    def deduplicate_documents(self, documents: List[Document]) -> List[Document]:
+        """Remove duplicate documents based on content similarity."""
+        if not documents:
+            return []
+        
+        unique_docs = []
+        seen_content = set()
+        
+        for doc in documents:
+            # Use first 200 characters as a fingerprint for deduplication
+            fingerprint = doc.page_content[:200].strip()
+            if fingerprint not in seen_content:
+                seen_content.add(fingerprint)
+                unique_docs.append(doc)
+        
+        return unique_docs
+
+    async def enhanced_knowledge_search(self, entries: List[JournalEntry]) -> List[Document]:
+        """Multi-stage search pipeline for better knowledge retrieval."""
+        print(f"\n=== ENHANCED KNOWLEDGE SEARCH PIPELINE ===")
+        all_knowledge_docs = []
+        
+        # Stage 1: Extract themes and search for specific symbols
+        print(f"Stage 1: Extracting and searching dream themes...")
+        dream_themes = self.extract_dream_elements(entries)
+        print(f"Extracted themes: {dream_themes}")
+        theme_docs = await self.knowledge_base.search_relevant_knowledge(dream_themes, k=2)
+        all_knowledge_docs.extend(theme_docs)
+        print(f"Found {len(theme_docs)} theme-based documents")
+        
+        # Stage 2: Search with raw dream content  
+        print(f"Stage 2: Searching with combined dream content...")
+        combined_content = " ".join([entry.content for entry in entries])
+        content_search = combined_content[:500]  # Limit to avoid too long queries
+        content_docs = await self.knowledge_base.search_relevant_knowledge(content_search, k=2)
+        all_knowledge_docs.extend(content_docs)
+        print(f"Found {len(content_docs)} content-based documents")
+        
+        # Stage 3: Targeted searches for different aspects
+        print(f"Stage 3: Targeted searches for emotions and symbols...")
+        
+        emotion_search = "fear anxiety joy sadness anger dream emotions psychological feelings mood"
+        emotion_docs = await self.knowledge_base.search_relevant_knowledge(emotion_search, k=1)
+        all_knowledge_docs.extend(emotion_docs)
+        print(f"Found {len(emotion_docs)} emotion-focused documents")
+        
+        symbol_search = "flying water animals death birth transformation symbols meaning interpretation significance"  
+        symbol_docs = await self.knowledge_base.search_relevant_knowledge(symbol_search, k=1)
+        all_knowledge_docs.extend(symbol_docs)
+        print(f"Found {len(symbol_docs)} symbol-focused documents")
+        
+        # Remove duplicates and return
+        unique_docs = self.deduplicate_documents(all_knowledge_docs)
+        print(f"After deduplication: {len(unique_docs)} unique documents")
+        print(f"=== END ENHANCED SEARCH PIPELINE ===\n")
+        
+        return unique_docs
+        
     async def qa_analysis(self, question: str, entries: List[JournalEntry]) -> str:
         """
         Function 1: Generate cumulative analysis using QA chain over journal entries.
         Equivalent to the qa() function in your JS code.
         """
         try:
+            print(f"\n=== Q&A ANALYSIS WITH KNOWLEDGE BASE ===")
+            print(f"Question: {question}")
+            print(f"Analyzing {len(entries)} journal entries")
+            
             # Convert entries to LangChain Documents
             docs = [
                 Document(
@@ -99,15 +314,49 @@ class DreamJournalAnalyzer:
             # Create vector store from documents
             vectorstore = FAISS.from_documents(docs, self.embeddings)
             
-            # Create QA chain
+            print(f"Created vector store from {len(docs)} journal entries")
+            
+            # Search knowledge base for context
+            print(f"Searching knowledge base for additional context...")
+            knowledge_docs = await self.knowledge_base.search_relevant_knowledge(question, k=2)
+            knowledge_context = ""
+            if knowledge_docs:
+                print(f"Adding {len(knowledge_docs)} knowledge references to Q&A context")
+                knowledge_context = "\n\nReference material:\n"
+                for doc in knowledge_docs:
+                    snippet = doc.page_content[:200] + "..." if len(doc.page_content) > 200 else doc.page_content
+                    knowledge_context += f"- {snippet}\n"
+            else:
+                print("No relevant knowledge found - proceeding with journal entries only")
+            
+            # Create QA chain with enhanced prompt
+            qa_prompt = f"""
+            Use the following context to answer questions about the dream journal entries.
+            {knowledge_context}
+            
+            Context: {{context}}
+            Question: {{question}}
+            Answer:"""
+            
+            print(f"Final Q&A prompt includes:")
+            print(f"  - Journal entries context: YES")
+            print(f"  - Knowledge base context: {'YES' if knowledge_context else 'NO'}")
+            print(f"  - Total context length: {len(qa_prompt)} characters")
+            
             qa_chain = RetrievalQA.from_chain_type(
                 llm=self.llm,
                 chain_type="stuff",
-                retriever=vectorstore.as_retriever(search_kwargs={"k": 4})
+                retriever=vectorstore.as_retriever(search_kwargs={"k": 4}),
+                chain_type_kwargs={"prompt": PromptTemplate.from_template(qa_prompt)}
             )
             
+            print(f"Executing Q&A chain...")
             # Get answer
             result = qa_chain.run(question)
+            
+            print(f"Q&A analysis complete. Response length: {len(result)} characters")
+            print(f"=== END Q&A ANALYSIS ===\n")
+            
             return result
             
         except Exception as error:
@@ -133,62 +382,99 @@ class DreamJournalAnalyzer:
         Equivalent to the analyze() function in your JS code.
         """
         try:
-            # Get personality description
+            print(f"\n=== KNOWLEDGE BASE SEARCH ===")
+            print(f"Searching knowledge base for: '{content[:100]}...'")
+            
+            # Search for relevant dream interpretation knowledge
+            knowledge_docs = await self.knowledge_base.search_relevant_knowledge(content, k=3)
+            
+            print(f"Found {len(knowledge_docs)} relevant knowledge documents")
+            
+            knowledge_context = ""
+            
+            if knowledge_docs:
+                print(f"Knowledge documents retrieved:")
+                knowledge_context = "\n\nRelevant dream interpretation references:\n"
+                for i, doc in enumerate(knowledge_docs, 1):
+                    # Limit context length
+                    snippet = doc.page_content[:300] + "..." if len(doc.page_content) > 300 else doc.page_content
+                    knowledge_context += f"{i}. {snippet}\n"
+                    
+                    # Log what was found
+                    source_file = doc.metadata.get('source', 'Unknown file')
+                    print(f"  {i}. From: {source_file}")
+                    print(f"     Content preview: {snippet[:150]}...")
+            else:
+                print("No relevant knowledge found - proceeding with basic analysis")
+            
             personality = get_personality(personality_type)
             
-            # Set up the parser
-            parser = PydanticOutputParser(pydantic_object=JournalAnalysis)
+            prompt = f"""
+            {personality}
             
-            # Create the prompt template
-            prompt = PromptTemplate(
-                template="""
-                {personality}
-                Analyze the following dream journal entry holistically. Consider the FULL RANGE of emotions present.
-                
-                Choose the PRIMARY emotion from these options: joy, sadness, anger, fear, surprise, disgust, anxiety, contentment, excitement, melancholy
-                
-                Do NOT default to excitement - carefully consider which emotion best represents the overall feeling of the dream.
-
-                Examples of mood analysis:
-                - Flying dreams often indicate "joy" or "contentment"  
-                - Being chased indicates "fear" or "anxiety"
-                - Losing something indicates "sadness" or "melancholy"
-
-                Analyze the following dream journal entry and return ONLY a valid JSON response with these exact fields:
+            Analyze the following dream journal entry. If relevant references are provided below, incorporate insights from established dream interpretation theory into your analysis.
             
-                {{
-                    "mood": "choose one: joy, sadness, anger, fear, surprise, disgust, anxiety, contentment, excitement, melancholy",
-                    "summary": "brief summary of the dream",
-                    "negative": true or false,
-                    "subject": "creative title for the dream", 
-                    "color": "hex color code representing the mood",
-                    "interpretation": "5-6 sentence analysis with song and snack suggestions",
-                    "sentiment_score": integer from -10 to 10
-                }}
-                
-                {format_instructions}
+            {knowledge_context}
+            
+            Consider the FULL RANGE of emotions present. Choose the PRIMARY emotion from these options: joy, sadness, anger, fear, surprise, disgust, anxiety, contentment, excitement, melancholy
+            
+            Do NOT default to excitement - carefully consider which emotion best represents the overall feeling of the dream.
 
-                Dream Journal Entry:
-                {content}
-                """,
-                input_variables=["content", "personality"],
-                partial_variables={"format_instructions": parser.get_format_instructions()}
+            Examples of mood analysis:
+            - Flying dreams often indicate "joy" or "contentment"  
+            - Being chased indicates "fear" or "anxiety"
+            - Losing something indicates "sadness" or "melancholy"
+
+            Return ONLY a valid JSON response with these exact fields:
+            
+            {{
+                "mood": "choose one: joy, sadness, anger, fear, surprise, disgust, anxiety, contentment, excitement, melancholy",
+                "summary": "brief summary of the dream",
+                "negative": true or false,
+                "subject": "creative title for the dream", 
+                "color": "hex color code representing the mood",
+                "interpretation": "5-6 sentence analysis incorporating dream theory if available, with song and snack suggestions",
+                "sentiment_score": integer from -10 to 10
+            }}
+            
+            Dream Journal Entry: {content}
+            
+            Return only the JSON object, no other text:
+            """
+            
+            print(f"\n=== FINAL PROMPT TO LLM ===")
+            print(f"Prompt length: {len(prompt)} characters")
+            print(f"Knowledge context length: {len(knowledge_context)} characters")
+            if knowledge_context:
+                print(f"Knowledge integration: YES - {len(knowledge_docs)} references included")
+            else:
+                print(f"Knowledge integration: NO - proceeding without references")
+            print(f"Full prompt preview (first 500 chars):")
+            print(f"{prompt[:500]}...")
+            print(f"=== END PROMPT PREVIEW ===\n")
+            
+            model = ChatOpenAI(temperature=0.3, model_name='gpt-3.5-turbo')
+            result = model.invoke(prompt)
+            result_content = result.content
+            
+            print(f"Raw LLM output: {result_content}")
+            
+            # Parse JSON directly
+            json_data = json.loads(result_content)
+            
+            # Create JournalAnalysis object manually
+            parsed_result = JournalAnalysis(
+                mood=EmotionType(json_data['mood']),
+                summary=json_data['summary'],
+                negative=json_data['negative'],
+                subject=json_data['subject'],
+                color=json_data['color'],
+                interpretation=json_data['interpretation'],
+                sentiment_score=json_data['sentiment_score']
             )
             
-            # Format the prompt
-            formatted_prompt = prompt.format(content=content, personality=personality)
+            print(f"Parsed mood: {parsed_result.mood}")
             
-            # Get analysis from LLM
-            model = ChatOpenAI(temperature=0, model_name='gpt-3.5-turbo')
-            # In analyze_entry method, after model.invoke():
-            result = model.invoke(formatted_prompt)
-            result_content = result.content
-            print(f"Raw LLM output: {result_content}")  # Debug line
-
-            # Parse the result
-            parsed_result = parser.parse(result_content)
-            print(f"Parsed mood: {parsed_result.mood}")  # Debug line
-                                    
             # Set the color based on mood
             parsed_result.color = get_emotion_color(parsed_result.mood)
             
@@ -217,10 +503,14 @@ class DreamJournalAnalyzer:
 class DreamJournalService:
     def __init__(self, openai_api_key: str):
         self.analyzer = DreamJournalAnalyzer(openai_api_key)
+        
+    async def initialize(self):
+        """Initialize the knowledge base on startup."""
+        await self.analyzer.initialize_knowledge_base()
     
     async def get_cumulative_analysis(self, entries: List[JournalEntry]) -> str:
         """Get overall analysis across all entries."""
-        question = "Provide a comprehensive analysis of these journal entries, identifying patterns, themes, and emotional trends over time."
+        question = "Provide a comprehensive analysis of these journal entries, identifying patterns, themes, and emotional trends over time. Reference dream interpretation theory where relevant."
         return await self.analyzer.qa_analysis(question, entries)
     
     async def generate_sample_dream(self, theme: str = "flying") -> str:
@@ -231,41 +521,3 @@ class DreamJournalService:
     async def analyze_single_entry(self, content: str, personality: str = "empathetic") -> JournalAnalysis:
         """Analyze a single journal entry."""
         return await self.analyzer.analyze_entry(content, personality)
-
-# # Example usage
-# async def main():
-#     # Initialize the service
-#     service = DreamJournalService("your-openai-api-key")
-    
-#     # Sample journal entries
-#     entries = [
-#         JournalEntry(
-#             id="1",
-#             created_at=datetime.now(),
-#             content="I had the most vivid dream about flying over a beautiful landscape. I felt so free and peaceful."
-#         ),
-#         JournalEntry(
-#             id="2", 
-#             created_at=datetime.now(),
-#             content="Dreamed I was lost in a dark forest, feeling anxious and scared. The trees seemed to be closing in on me."
-#         )
-#     ]
-    
-#     # Example 1: Get cumulative analysis
-#     cumulative_analysis = await service.get_cumulative_analysis(entries)
-#     print("Cumulative Analysis:", cumulative_analysis)
-    
-#     # Example 2: Generate sample dream
-#     sample_dream = await service.generate_sample_dream("underwater adventure")
-#     print("Sample Dream:", sample_dream)
-    
-#     # Example 3: Analyze single entry
-#     analysis = await service.analyze_single_entry(
-#         "I dreamed I was dancing with stars in an endless ballroom made of clouds.",
-#         "mystical"
-#     )
-#     print("Analysis:", analysis)
-
-# if __name__ == "__main__":
-#     import asyncio
-#     asyncio.run(main())

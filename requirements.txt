@@ -9,3 +9,4 @@ numpy>=1.24.3
 fastapi
 uvicorn
 python-dotenv
+pypdf==4.0.1
