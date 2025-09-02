@@ -1,0 +1,56 @@
+# docker-compose.yml (goes in django_backend_dream/docker-compose.yml)
+version: '3.8'
+
+services:
+  django:
+    build: .
+    container_name: dream_django
+    ports:
+      - "8000:8000"
+    environment:
+      - DEBUG=False
+      - DJANGO_SETTINGS_MODULE=mysite.settings
+    volumes:
+      - .:/app
+    depends_on:
+      - db
+    restart: unless-stopped
+
+  fastapi:
+    build: ./dream-fast-api
+    container_name: dream_fastapi
+    ports:
+      - "8001:8001"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    volumes:
+      - ./dream-fast-api:/app
+    restart: unless-stopped
+
+  db:
+    image: postgres:15-alpine
+    container_name: dream_postgres
+    environment:
+      - POSTGRES_DB=dreamdb
+      - POSTGRES_USER=dreamuser
+      - POSTGRES_PASSWORD=dreampass
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:alpine
+    container_name: dream_nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - django
+      - fastapi
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
