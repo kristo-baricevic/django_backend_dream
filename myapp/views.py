@@ -97,7 +97,7 @@ def update_entry(request, id):
                 
                 # Call FastAPI analyze endpoint
                 fastapi_response = requests.post(
-                    'http://localhost:8001/analyze',
+                    'http://104.236.96.193:8001/analyze',
                     json={
                         'content': updated_entry.content,
                         'personality_type': personality_type

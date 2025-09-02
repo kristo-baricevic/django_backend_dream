@@ -28,7 +28,9 @@ DEBUG = True
 ALLOWED_HOSTS = []
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = [
-    "http://localhost:3000",   # Next.js dev server
+    "http://localhost:3000",  # For local development
+    "http://104.236.96.193",  # Your droplet IP
+    "https://dream-app-nu.vercel.app/"
 ]
 
 # Application definition
