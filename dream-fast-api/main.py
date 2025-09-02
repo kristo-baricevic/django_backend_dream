@@ -146,6 +146,18 @@ async def get_personalities():
         "practical": "Practical and solution-oriented analysis"
     }
 
+@app.post("/custom-question")
+async def custom_question(
+    request: QARequest,
+    journal_service: DreamJournalService = Depends(get_service)
+):
+    """Handle custom questions about dreams."""
+    try:
+        result = await journal_service.ask_custom_question(request.question, request.entries)
+        return {"answer": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Custom question failed: {str(e)}")
+
 # Health check
 @app.get("/health")
 async def health_check():

@@ -298,92 +298,77 @@ class DreamJournalAnalyzer:
             print(f"\n=== Q&A ANALYSIS WITH KNOWLEDGE BASE ===")
             print(f"Question: {question}")
             print(f"Analyzing {len(entries)} journal entries")
-
-            if not entries:
+            
+            # Convert entries to LangChain Documents
+            docs = [
+                Document(
+                    page_content=entry.content,
+                    metadata={"source": entry.id, "date": entry.created_at.isoformat()}
+                )
+                for entry in entries
+            ]
+            
+            if not docs:
                 raise ValueError("No journal entries provided")
-
+            
+            # Create vector store from documents
+            vectorstore = FAISS.from_documents(docs, self.embeddings)
+            
+            print(f"Created vector store from {len(docs)} journal entries")
+            
             # Search knowledge base for context
             print(f"Searching knowledge base for additional context...")
+            # knowledge_docs = await self.knowledge_base.search_relevant_knowledge(question, k=2)
             knowledge_docs = await self.enhanced_knowledge_search(entries)
 
-            # Build combined docs with unique IDs
-            context_docs = []
-            for i, entry in enumerate(entries):
-                context_docs.append(
-                    Document(
-                        page_content=entry.content,
-                        metadata={
-                            "doc_id": f"journal_{i}",
-                            "source": entry.id,
-                            "date": entry.created_at.isoformat()
-                        }
-                    )
-                )
-            for j, kdoc in enumerate(knowledge_docs):
-                context_docs.append(
-                    Document(
-                        page_content=kdoc.page_content,
-                        metadata={
-                            "doc_id": f"knowledge_{j}",
-                            "source": kdoc.metadata.get("source", "knowledge")
-                        }
-                    )
-                )
-
-            # Create vector store
-            vectorstore = FAISS.from_documents(context_docs, self.embeddings)
-            print(f"Created vector store from {len(context_docs)} documents "
-                  f"({len(entries)} journal entries + {len(knowledge_docs)} knowledge refs)")
-
-            # Build context string for logging
             knowledge_context = ""
             if knowledge_docs:
                 print(f"Adding {len(knowledge_docs)} knowledge references to Q&A context")
                 knowledge_context = "\n\nReference material:\n"
                 for doc in knowledge_docs:
                     snippet = doc.page_content[:200] + "..." if len(doc.page_content) > 200 else doc.page_content
+                    snippet = snippet.replace("{", "{{").replace("}", "}}")
                     knowledge_context += f"- {snippet}\n"
             else:
                 print("No relevant knowledge found - proceeding with journal entries only")
-
-            context_text = "\n\n".join([d.page_content for d in context_docs])
-
-            if knowledge_docs:
-                context_text += "\n\n" + "\n\n".join([d.page_content for d in knowledge_docs])
-
-
+            
             # Create QA chain with enhanced prompt
-            qa_prompt = PromptTemplate(
-                input_variables=["context", "question"],
-                template="""
-            Use the following context to answer questions about the dream journal entries.
+            qa_prompt = f"""
+            You are a dream interpretation expert. Analyze the journal entries using SPECIFICALLY the dream interpretation theory provided below. You MUST reference and apply these concepts directly in your analysis.
 
-            {context}
+            REQUIRED SOURCE MATERIAL TO USE:
+            {knowledge_context}
 
-            Question: {question}
-            Answer:"""
-            )
+            Apply the above dream interpretation principles to analyze patterns and themes in these journal entries: {{context}}
 
+            Question: {{question}}
+
+            Answer by directly referencing and applying the dream interpretation theory provided above:"""
+            
+            print(f"Final Q&A prompt includes:")
+            print(f"  - Journal entries context: YES")
+            print(f"  - Knowledge base context: {'YES' if knowledge_context else 'NO'}")
+            print(f"  - Total context length: {len(qa_prompt)} characters")
+            print(f"  - Total context: {knowledge_context}")
+
+            
             qa_chain = RetrievalQA.from_chain_type(
                 llm=self.llm,
                 chain_type="stuff",
                 retriever=vectorstore.as_retriever(search_kwargs={"k": 4}),
-                chain_type_kwargs={
-                    "prompt": qa_prompt,
-                    "document_variable_name": "context"
-                },
-                input_key="question",
-                output_key="result"
+                chain_type_kwargs={"prompt": PromptTemplate.from_template(qa_prompt)}
             )
-
-            result = qa_chain.invoke({"question": question, "context": context_text})
-
-            answer_text = result["result"]
-
+            
+            print(f"Executing Q&A chain...")
+            # Get answer
+            
+            result = qa_chain.run(question)
+            
+            print(f"Q&A analysis complete. Response length: {len(result)} characters")
             print(f"=== END Q&A ANALYSIS ===\n")
-
-            return answer_text
-
+            
+            return result
+            
         except Exception as error:
             print(f'Error in QA process: {error}')
             raise Exception('Failed to process QA request')
@@ -400,6 +385,59 @@ class DreamJournalAnalyzer:
         except Exception as error:
             print(f'Error in AI generation: {error}')
             raise Exception('Failed to generate AI content')
+
+    async def custom_question_analysis(self, custom_question: str, entries: List[JournalEntry]) -> str:
+        """Handle custom user questions with knowledge base integration."""
+        try:
+            print(f"\n=== CUSTOM QUESTION ANALYSIS ===")
+            print(f"Custom Question: {custom_question}")
+            
+            # Convert entries to documents
+            docs = [
+                Document(
+                    page_content=entry.content,
+                    metadata={"source": entry.id, "date": entry.created_at.isoformat()}
+                )
+                for entry in entries
+            ]
+            
+            # Create vector store
+            vectorstore = FAISS.from_documents(docs, self.embeddings)
+            
+            # Get knowledge base context
+            knowledge_docs = await self.enhanced_knowledge_search(entries)
+            knowledge_context = ""
+            if knowledge_docs:
+                knowledge_context = "\n\nRelevant dream interpretation theory:\n"
+                for doc in knowledge_docs:
+                    snippet = doc.page_content[:300] + "..." if len(doc.page_content) > 300 else doc.page_content
+                    snippet = snippet.replace("{", "{{").replace("}", "}}")
+                    knowledge_context += f"- {snippet}\n"
+            
+            # Create prompt with user's question
+            prompt = f"""
+            Answer the following question about the dream journal entries using the provided dream interpretation theory.
+            
+            {knowledge_context}
+            
+            Journal Entries: {{context}}
+            Question: {custom_question}
+            Answer:"""
+            
+            # Create QA chain
+            qa_chain = RetrievalQA.from_chain_type(
+                llm=self.llm,
+                chain_type="stuff", 
+                retriever=vectorstore.as_retriever(search_kwargs={"k": 4}),
+                chain_type_kwargs={"prompt": PromptTemplate.from_template(prompt)}
+            )
+            
+            result = qa_chain.run(custom_question)
+            return result
+            
+        except Exception as error:
+            print(f'Error in custom question analysis: {error}')
+            raise Exception('Failed to process custom question')
 
     async def analyze_entry(self, content: str, personality_type: str = "empathetic") -> JournalAnalysis:
         """
@@ -548,3 +586,9 @@ class DreamJournalService:
     async def analyze_single_entry(self, content: str, personality: str = "empathetic") -> JournalAnalysis:
         """Analyze a single journal entry."""
         return await self.analyzer.analyze_entry(content, personality)
+
+    async def ask_custom_question(self, question: str, entries: List[JournalEntry]) -> str:
+        """Ask a custom question about the dreams."""
+        return await self.analyzer.custom_question_analysis(question, entries)
+
+    
