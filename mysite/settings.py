@@ -25,7 +25,15 @@ SECRET_KEY = 'django-insecure-k0g_lhhqk$!w+(#a6et@zmgfory4d*4qf*%33l4pe@8&5_j!@s
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ["dream-journal-app.com", "www.dream-journal-app.com", "localhost", "127.0.0.1"]
+ALLOWED_HOSTS = [
+    "dream-journal-app.com",
+    "www.dream-journal-app.com",
+    "dream-app-nu.vercel.app",
+    "localhost",
+    "127.0.0.1",
+]
+
+CORS_ALLOW_CREDENTIALS = True
 
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
