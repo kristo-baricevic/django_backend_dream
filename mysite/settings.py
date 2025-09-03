@@ -25,13 +25,21 @@ SECRET_KEY = 'django-insecure-k0g_lhhqk$!w+(#a6et@zmgfory4d*4qf*%33l4pe@8&5_j!@s
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ["104.236.96.193", "localhost", "127.0.0.1"]
-CORS_ALLOW_CREDENTIALS = True
+ALLOWED_HOSTS = ["dream-journal-app.com", "www.dream-journal-app.com", "localhost", "127.0.0.1"]
+
 CORS_ALLOWED_ORIGINS = [
-    "http://localhost:3000",  # For local development
-    "https://104.236.96.193",  # Your droplet IP
-    "https://dream-app-nu.vercel.app/"
+    "http://localhost:3000",
+    "https://dream-journal-app.com",
+    "https://www.dream-journal-app.com",
+    "https://dream-app-nu.vercel.app",
 ]
+
+CSRF_TRUSTED_ORIGINS = [
+    "https://dream-journal-app.com",
+    "https://www.dream-journal-app.com",
+    "https://dream-app-nu.vercel.app",
+]
+
 
 # Application definition
 
