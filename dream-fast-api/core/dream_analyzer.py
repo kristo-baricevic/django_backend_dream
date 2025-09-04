@@ -362,12 +362,46 @@ class DreamJournalAnalyzer:
             print(f"Executing Q&A chain...")
             # Get answer
             
-            result = qa_chain.run(question)
-            
-            print(f"Q&A analysis complete. Response length: {len(result)} characters")
+            draft = qa_chain.run(question)
+            print(f"Stage 1 draft length: {len(draft)} characters")
+
+            # --- Stage 2: Refinement ---
+            refine_prompt = f"""
+            Here is your first draft interpretation of the dream entries:
+
+            --- BEGIN DRAFT ---
+            {draft}
+            --- END DRAFT ---
+
+            Refine this analysis by:
+            - Do not refer to "the dreamer." Address the reader as if they are your patient. Use "you" and other pronouns.
+            - Instead of addressing dreams sequentially, focus on finding patterns linking the dreams together.
+            - Making it clearer, structured, and concise
+            - Highlighting key symbols and emotional themes
+            - Quote the knowledge context if applicable
+            - Grounding insights in the dream interpretation theory provided, and reference your citations
+
+            THEORY:
+            {knowledge_context}
+
+            Journal Entries: {{context}}
+
+            Return the refined interpretation:
+            """
+
+            refine_chain = RetrievalQA.from_chain_type(
+                llm=self.llm,
+                chain_type="stuff",
+                retriever=vectorstore.as_retriever(search_kwargs={"k": 4}),
+                chain_type_kwargs={"prompt": PromptTemplate.from_template(refine_prompt)}
+            )
+            refined = refine_chain.run("Refine the draft interpretation.")
+
+            print(f"Stage 2 refinement length: {len(refined)} characters")
+
             print(f"=== END Q&A ANALYSIS ===\n")
             
-            return result
+            return refined
             
         except Exception as error:
             print(f'Error in QA process: {error}')
@@ -563,6 +597,70 @@ class DreamJournalAnalyzer:
                 # Continue with other entries
                 continue
         return results
+
+    async def refine_analysis(self, draft: str, entries: List[JournalEntry]) -> str:
+        """
+        Stage 2 refinement: take the first draft analysis and improve it
+        using the knowledge base + dream entries for grounding.
+        """
+        try:
+            print(f"\n=== REFINEMENT STAGE ===")
+            print(f"Draft length: {len(draft)} characters")
+            
+            # Get knowledge context again (so model doesn't drift)
+            knowledge_docs = await self.enhanced_knowledge_search(entries)
+            knowledge_context = ""
+            if knowledge_docs:
+                knowledge_context = "\n\nRelevant dream interpretation theory:\n"
+                for doc in knowledge_docs:
+                    snippet = doc.page_content[:300] + "..." if len(doc.page_content) > 300 else doc.page_content
+                    snippet = snippet.replace("{", "{{").replace("}", "}}")
+                    knowledge_context += f"- {snippet}\n"
+
+            prompt = f"""
+            You wrote the following first draft analysis of the dream journal entries:
+
+            --- BEGIN DRAFT ---
+            {draft}
+            --- END DRAFT ---
+
+            Refine and improve this analysis by:
+            - Making it clearer, better structured, and more concise
+            - Highlighting key symbols and emotional themes
+            - Grounding interpretations in the following dream interpretation theory if relevant:
+            {knowledge_context}
+
+            Journal Entries for reference:
+            {{context}}
+
+            Return the refined interpretation:
+            """
+
+            # Create RetrievalQA to keep entries accessible
+            docs = [
+                Document(
+                    page_content=entry.content,
+                    metadata={"source": entry.id, "date": entry.created_at.isoformat()}
+                )
+                for entry in entries
+            ]
+            vectorstore = FAISS.from_documents(docs, self.embeddings)
+
+            qa_chain = RetrievalQA.from_chain_type(
+                llm=self.llm,
+                chain_type="stuff",
+                retriever=vectorstore.as_retriever(search_kwargs={"k": 4}),
+                chain_type_kwargs={"prompt": PromptTemplate.from_template(prompt)}
+            )
+
+            result = qa_chain.run("Refine the draft interpretation.")
+            print(f"Refinement complete. Length: {len(result)} characters")
+            return result
+
+        except Exception as e:
+            print(f"Error in refinement stage: {e}")
+            raise
+
 
 # Example usage and helper functions
 class DreamJournalService:
