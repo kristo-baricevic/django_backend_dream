@@ -289,7 +289,7 @@ class DreamJournalAnalyzer:
         
         return unique_docs
         
-    async def qa_analysis(self, question: str, entries: List[JournalEntry]) -> str:
+    async def qa_analysis(self, question: str, entries: List[JournalEntry], personality: str = None) -> str:    
         """
         Function 1: Generate cumulative analysis using QA chain over journal entries.
         Equivalent to the qa() function in your JS code.
@@ -332,9 +332,16 @@ class DreamJournalAnalyzer:
             else:
                 print("No relevant knowledge found - proceeding with journal entries only")
             
+
+            personality_instruction = ""
+            if personality:
+                personality_instruction = f"\n\nPersonality and Approach:\n{personality}\n\nEmbody this personality and approach in your analysis and response style.\n"
+
             # Create QA chain with enhanced prompt
             qa_prompt = f"""
-            You are a dream interpretation expert. Analyze the journal entries using SPECIFICALLY the dream interpretation theory provided below. You MUST reference and apply these concepts directly in your analysis.
+            You are a dream interpretation expert. {personality_instruction}
+            
+            Analyze the journal entries using SPECIFICALLY the dream interpretation theory provided below. You MUST reference and apply these concepts directly in your analysis.
 
             REQUIRED SOURCE MATERIAL TO USE:
             {knowledge_context}
@@ -351,7 +358,6 @@ class DreamJournalAnalyzer:
             print(f"  - Total context length: {len(qa_prompt)} characters")
             print(f"  - Total context: {knowledge_context}")
 
-            
             qa_chain = RetrievalQA.from_chain_type(
                 llm=self.llm,
                 chain_type="stuff",
@@ -380,6 +386,8 @@ class DreamJournalAnalyzer:
             - Highlighting key symbols and emotional themes
             - Quote the knowledge context if applicable
             - Grounding insights in the dream interpretation theory provided, and reference your citations
+            - Highlight the main symbols and theme and give a conclusion with some life advice or insight
+            - Avoid recapping the dream's plot. Speak only of connections between dreams, themes, emotions, symbols, and subconscious.
 
             THEORY:
             {knowledge_context}
@@ -420,7 +428,7 @@ class DreamJournalAnalyzer:
             print(f'Error in AI generation: {error}')
             raise Exception('Failed to generate AI content')
 
-    async def custom_question_analysis(self, custom_question: str, entries: List[JournalEntry]) -> str:
+    async def custom_question_analysis(self, custom_question: str, entries: List[JournalEntry], personality: str = None) -> str:
         """Handle custom user questions with knowledge base integration."""
         try:
             print(f"\n=== CUSTOM QUESTION ANALYSIS ===")
@@ -447,10 +455,17 @@ class DreamJournalAnalyzer:
                     snippet = doc.page_content[:300] + "..." if len(doc.page_content) > 300 else doc.page_content
                     snippet = snippet.replace("{", "{{").replace("}", "}}")
                     knowledge_context += f"- {snippet}\n"
+
+            personality_instruction = ""
+            if personality:
+                personality_instruction = f"\n\nPersonality and Approach:\n{personality}\n\nEmbody this personality and approach in your response style.\n"
+
             
             # Create prompt with user's question
             prompt = f"""
             Answer the following question about the dream journal entries using the provided dream interpretation theory.
+
+            {personality_instruction}
             
             {knowledge_context}
             
@@ -671,10 +686,10 @@ class DreamJournalService:
         """Initialize the knowledge base on startup."""
         await self.analyzer.initialize_knowledge_base()
     
-    async def get_cumulative_analysis(self, entries: List[JournalEntry]) -> str:
+    async def get_cumulative_analysis(self, entries: List[JournalEntry], personality: str = None) -> str:
         """Get overall analysis across all entries."""
         question = "Provide a comprehensive analysis of these journal entries, identifying patterns, themes, and emotional trends over time. Reference dream interpretation theory where relevant."
-        return await self.analyzer.qa_analysis(question, entries)
+        return await self.analyzer.qa_analysis(question, entries, personality)
     
     async def generate_sample_dream(self, theme: str = "flying") -> str:
         """Generate a sample dream for inspiration."""
@@ -685,8 +700,8 @@ class DreamJournalService:
         """Analyze a single journal entry."""
         return await self.analyzer.analyze_entry(content, personality)
 
-    async def ask_custom_question(self, question: str, entries: List[JournalEntry]) -> str:
+    async def ask_custom_question(self, question: str, entries: List[JournalEntry], personality: str = None) -> str:
         """Ask a custom question about the dreams."""
-        return await self.analyzer.custom_question_analysis(question, entries)
+        return await self.analyzer.custom_question_analysis(question, entries, personality)
 
     

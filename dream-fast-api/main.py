@@ -58,6 +58,8 @@ class AnalyzeEntryRequest(BaseModel):
 class QARequest(BaseModel):
     question: str
     entries: List[JournalEntry]
+    personality: Optional[str] = None
+
 
 class GenerateDreamRequest(BaseModel):
     theme: Optional[str] = "flying"
@@ -99,7 +101,7 @@ async def qa_analysis(
 ):
     """Perform Q&A analysis over multiple journal entries."""
     try:
-        result = await journal_service.get_cumulative_analysis(request.entries)
+        result = await journal_service.get_cumulative_analysis(request.entries, request.personality)
         return {"answer": result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Q&A analysis failed: {str(e)}")
@@ -153,7 +155,7 @@ async def custom_question(
 ):
     """Handle custom questions about dreams."""
     try:
-        result = await journal_service.ask_custom_question(request.question, request.entries)
+        result = await journal_service.ask_custom_question(request.question, request.entries, request.personality)
         return {"answer": result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Custom question failed: {str(e)}")
