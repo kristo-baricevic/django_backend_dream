@@ -3,10 +3,47 @@ from django.shortcuts import render
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.generics import ListAPIView
+from rest_framework.pagination import PageNumberPagination
 from rest_framework import status
 from .models import Analysis, JournalEntry
 from .serializers import AnalysisSerializer, JournalEntrySerializer
 from rest_framework.permissions import AllowAny
+from django.db.models import Q
+
+
+class JournalEntryPagination(PageNumberPagination):
+    page_size = 3
+    page_size_query_param = 'page_size'
+    max_page_size = 100
+    page_query_param = 'page'
+
+
+class JournalEntryListView(ListAPIView):
+    serializer_class = JournalEntrySerializer
+    pagination_class = JournalEntryPagination
+    permission_classes = [AllowAny]
+
+    def get_queryset(self):
+        qs = JournalEntry.objects.all().order_by('-created_at')
+        if self.request.user.is_authenticated:
+            qs = qs.filter(user=self.request.user)
+
+        entries = self.request.query_params.get('entries')
+        title = self.request.query_params.get('title')
+        moods = self.request.query_params.get('moods')
+        analysis = self.request.query_params.get('analysis')
+
+        if entries:
+            qs = qs.filter(content__icontains=entries)
+        if title:
+            qs = qs.filter(analysis__subject__icontains=title)
+        if moods:
+            qs = qs.filter(analysis__mood__icontains=moods)
+        if analysis:
+            qs = qs.filter(analysis__summary__icontains=analysis)
+
+        return qs
 
 @api_view(['GET'])
 @permission_classes([AllowAny])

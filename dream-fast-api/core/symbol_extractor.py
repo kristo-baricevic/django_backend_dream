@@ -14,7 +14,7 @@ class DreamSymbolExtractor:
     def __init__(self, knowledge_base_path: str):
         self.knowledge_base_path = knowledge_base_path
         self.stopwords = set(stopwords.words('english'))
-        
+
         # Download required NLTK data
         try:
             nltk.data.find('tokenizers/punkt')

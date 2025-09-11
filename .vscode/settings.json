@@ -1,12 +1,13 @@
 {
-    "cSpell.words": [
-        "dotenv",
-        "faiss",
-        "fastapi",
-        "langchain",
-        "numpy",
-        "openai",
-        "pydantic",
-        "tiktoken"
-    ]
+  "cSpell.words": [
+    "dotenv",
+    "faiss",
+    "fastapi",
+    "langchain",
+    "numpy",
+    "openai",
+    "punkt",
+    "pydantic",
+    "tiktoken"
+  ]
 }
