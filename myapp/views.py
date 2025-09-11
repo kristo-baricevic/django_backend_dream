@@ -10,6 +10,7 @@ from .models import Analysis, JournalEntry
 from .serializers import AnalysisSerializer, JournalEntrySerializer
 from rest_framework.permissions import AllowAny
 from django.db.models import Q
+from django.utils.dateparse import parse_date
 
 
 class JournalEntryPagination(PageNumberPagination):
@@ -17,6 +18,7 @@ class JournalEntryPagination(PageNumberPagination):
     page_size_query_param = 'page_size'
     max_page_size = 100
     page_query_param = 'page'
+
 
 
 class JournalEntryListView(ListAPIView):
@@ -33,6 +35,8 @@ class JournalEntryListView(ListAPIView):
         title = self.request.query_params.get('title')
         moods = self.request.query_params.get('moods')
         analysis = self.request.query_params.get('analysis')
+        start_date = self.request.query_params.get('start_date')
+        end_date = self.request.query_params.get('end_date')
 
         if entries:
             qs = qs.filter(content__icontains=entries)
@@ -43,7 +47,17 @@ class JournalEntryListView(ListAPIView):
         if analysis:
             qs = qs.filter(analysis__summary__icontains=analysis)
 
+        if start_date:
+            start_date = parse_date(start_date)
+            if start_date:
+                qs = qs.filter(created_at__date__gte=start_date)
+        if end_date:
+            end_date = parse_date(end_date)
+            if end_date:
+                qs = qs.filter(created_at__date__lte=end_date)
+
         return qs
+
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
