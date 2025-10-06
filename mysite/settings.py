@@ -112,16 +112,16 @@ DATABASES = {
 }
 
 ##DEPLOYMENT
-# DATABASES = {
-#     'default': {
-#         'ENGINE': 'django.db.backends.postgresql',
-#         'NAME': 'dreamdb',
-#         'USER': 'dreamuser',
-#         'PASSWORD': 'dreampass',
-#         'HOST': 'db',
-#         'PORT': '5432',
-#     }
-# }
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': 'dreamdb',
+        'USER': 'dreamuser',
+        'PASSWORD': 'dreampass',
+        'HOST': 'db',
+        'PORT': '5432',
+    }
+}
 
 
 
