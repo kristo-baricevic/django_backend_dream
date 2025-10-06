@@ -116,7 +116,7 @@ DATABASES = {
         'NAME': 'dreamdb',
         'USER': 'dreamuser',
         'PASSWORD': 'dreampass',
-        'HOST': 'db',  # This is the Docker service name, not localhost
+        'HOST': 'db',
         'PORT': '5432',
     }
 }
