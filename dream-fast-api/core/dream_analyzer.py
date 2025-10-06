@@ -562,6 +562,8 @@ class DreamJournalAnalyzer:
         """Handle custom questions with RAG architecture"""
         try:
             print(f"\n=== CUSTOM QUESTION ANALYSIS ===")
+            print(custom_question)
+
             
             docs = [
                 Document(
@@ -583,11 +585,17 @@ class DreamJournalAnalyzer:
 
             prompt = f"""
             Answer the following question about the dream journal entries.
-            {personality_instruction}
             
+            Use this instruction to guide your own personality and background: {personality_instruction}
+            
+
+            This is the context of dream theory that you can use to inform your response:
             {full_context}
             
+            These are the journal entries you can source your data from to inform your answer to the question:
             Journal Entries: {{context}}
+
+            This is the question you must answer:
             Question: {custom_question}
             Answer:"""
             
