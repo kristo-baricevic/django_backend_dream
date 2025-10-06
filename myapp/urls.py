@@ -11,4 +11,5 @@ urlpatterns = [
     path('entries/create/', create_entry, name='create_entry'),
     path('entries/<uuid:id>/update/', update_entry, name='update_entry'),
     path('entries/<uuid:id>/delete/', delete_entry, name='delete_entry'),
+    path('entries/moods/', views.MoodListView.as_view(), name='get_moods'),  # Add this
 ]
