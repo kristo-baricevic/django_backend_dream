@@ -289,14 +289,13 @@ class DreamJournalAnalyzer:
         
         return unique_docs
         
-    async def qa_analysis(self, question: str, entries: List[JournalEntry], personality: str = None) -> str:    
+    async def qa_analysis(self, entries: List[JournalEntry], personality: str = None, settings: Dict[str, Any] = None) -> str:    
         """
         Function 1: Generate cumulative analysis using QA chain over journal entries.
         Equivalent to the qa() function in your JS code.
         """
         try:
             print(f"\n=== Q&A ANALYSIS WITH KNOWLEDGE BASE ===")
-            print(f"Question: {question}")
             print(f"Analyzing {len(entries)} journal entries")
             
             # Convert entries to LangChain Documents
@@ -337,9 +336,34 @@ class DreamJournalAnalyzer:
             if personality:
                 personality_instruction = f"\n\nPersonality and Approach:\n{personality}\n\nEmbody this personality and approach in your analysis and response style.\n"
 
+            settings_instruction = ""
+            if settings:
+                settings_instruction = "\n\nUser Profile Information:\n"
+                
+                # Astrology
+                if settings.get('astrology'):
+                    astro = settings['astrology']
+                    settings_instruction += f"Astrological Signs: Sun in {astro.get('sun', 'unknown')}, Moon in {astro.get('moon', 'unknown')}, Rising in {astro.get('rising', 'unknown')}\n"
+                
+                # Occupation and personality
+                if settings.get('occupation'):
+                    settings_instruction += f"Occupation: {settings['occupation']}\n"
+                if settings.get('personality'):
+                    settings_instruction += f"Personality Type: {settings['personality']}\n"
+                
+                # Medical history
+                if settings.get('medicalHistory'):
+                    med = settings['medicalHistory']
+                    if med.get('psychological'):
+                        settings_instruction += f"Psychological History: {', '.join(med['psychological'])}\n"
+                    if med.get('physical'):
+                        settings_instruction += f"Physical Health: {', '.join(med['physical'])}\n"
+                
+                settings_instruction += "\nUse this profile information to provide personalized dream interpretation that considers the user's background, mental health, and life circumstances.\n"
+
             # Create QA chain with enhanced prompt
             qa_prompt = f"""
-            You are a dream interpretation expert. {personality_instruction}
+            You are a dream interpretation expert. {personality_instruction} {settings_instruction}
             
             Analyze the journal entries using SPECIFICALLY the dream interpretation theory provided below. You MUST reference and apply these concepts directly in your analysis.
 
@@ -347,8 +371,6 @@ class DreamJournalAnalyzer:
             {knowledge_context}
 
             Apply the above dream interpretation principles to analyze patterns and themes in these journal entries: {{context}}
-
-            Question: {{question}}
 
             Answer by directly referencing and applying the dream interpretation theory provided above:"""
             
@@ -367,6 +389,8 @@ class DreamJournalAnalyzer:
             
             print(f"Executing Q&A chain...")
             # Get answer
+            question = "Provide a comprehensive analysis of these journal entries, identifying patterns, themes, and emotional trends over time."
+
             
             draft = qa_chain.run(question)
             print(f"Stage 1 draft length: {len(draft)} characters")
@@ -428,7 +452,7 @@ class DreamJournalAnalyzer:
             print(f'Error in AI generation: {error}')
             raise Exception('Failed to generate AI content')
 
-    async def custom_question_analysis(self, custom_question: str, entries: List[JournalEntry], personality: str = None) -> str:
+    async def custom_question_analysis(self, custom_question: str, entries: List[JournalEntry], personality: str = None, settings: Dict[str, Any] = None) -> str:
         """Handle custom user questions with knowledge base integration."""
         try:
             print(f"\n=== CUSTOM QUESTION ANALYSIS ===")
@@ -460,12 +484,34 @@ class DreamJournalAnalyzer:
             if personality:
                 personality_instruction = f"\n\nPersonality and Approach:\n{personality}\n\nEmbody this personality and approach in your response style.\n"
 
-            
+            if settings:
+                settings_instruction = "\n\nUser Profile Information:\n"
+                
+                # Astrology
+                if settings.get('astrology'):
+                    astro = settings['astrology']
+                    settings_instruction += f"Astrological Signs: Sun in {astro.get('sun', 'unknown')}, Moon in {astro.get('moon', 'unknown')}, Rising in {astro.get('rising', 'unknown')}\n"
+                
+                # Occupation and personality
+                if settings.get('occupation'):
+                    settings_instruction += f"Occupation: {settings['occupation']}\n"
+                if settings.get('personality'):
+                    settings_instruction += f"Personality Type: {settings['personality']}\n"
+                
+                # Medical history
+                if settings.get('medicalHistory'):
+                    med = settings['medicalHistory']
+                    if med.get('psychological'):
+                        settings_instruction += f"Psychological History: {', '.join(med['psychological'])}\n"
+                    if med.get('physical'):
+                        settings_instruction += f"Physical Health: {', '.join(med['physical'])}\n"
+                
+                settings_instruction += "\nUse this profile information to provide personalized dream interpretation that considers the user's background, mental health, and life circumstances.\n"
             # Create prompt with user's question
             prompt = f"""
             Answer the following question about the dream journal entries using the provided dream interpretation theory.
 
-            {personality_instruction}
+            {personality_instruction}{settings_instruction}
             
             {knowledge_context}
             
@@ -686,10 +732,10 @@ class DreamJournalService:
         """Initialize the knowledge base on startup."""
         await self.analyzer.initialize_knowledge_base()
     
-    async def get_cumulative_analysis(self, entries: List[JournalEntry], personality: str = None) -> str:
+    async def get_cumulative_analysis(self, entries: List[JournalEntry], personality: str = None, settings: Dict[str, Any] = None ) -> str:
         """Get overall analysis across all entries."""
         question = "Provide a comprehensive analysis of these journal entries, identifying patterns, themes, and emotional trends over time. Reference dream interpretation theory where relevant."
-        return await self.analyzer.qa_analysis(question, entries, personality)
+        return await self.analyzer.qa_analysis(entries, personality, settings)
     
     async def generate_sample_dream(self, theme: str = "flying") -> str:
         """Generate a sample dream for inspiration."""
@@ -700,8 +746,8 @@ class DreamJournalService:
         """Analyze a single journal entry."""
         return await self.analyzer.analyze_entry(content, personality)
 
-    async def ask_custom_question(self, question: str, entries: List[JournalEntry], personality: str = None) -> str:
+    async def ask_custom_question(self, question: str, entries: List[JournalEntry], personality: str = None, settings: Dict[str, Any] = None) -> str:
         """Ask a custom question about the dreams."""
-        return await self.analyzer.custom_question_analysis(question, entries, personality)
+        return await self.analyzer.custom_question_analysis(question, entries, personality, settings)
 
     

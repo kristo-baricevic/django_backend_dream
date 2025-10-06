@@ -5,6 +5,7 @@ from typing import List, Optional
 from datetime import datetime
 import os
 from contextlib import asynccontextmanager
+from typing import List, Dict, Any, Optional
 
 # Import your journal analyzer
 from core.dream_analyzer import (
@@ -56,9 +57,15 @@ class AnalyzeEntryRequest(BaseModel):
     personality_type: Optional[str] = "empathetic"
 
 class QARequest(BaseModel):
+    entries: List[JournalEntry]
+    personality: Optional[str] = None
+    settings: Dict[str, Any] = None
+
+class QARequestCustom(BaseModel):
     question: str
     entries: List[JournalEntry]
     personality: Optional[str] = None
+    settings: Dict[str, Any] = None
 
 
 class GenerateDreamRequest(BaseModel):
@@ -67,6 +74,7 @@ class GenerateDreamRequest(BaseModel):
 class BatchAnalyzeRequest(BaseModel):
     entries: List[JournalEntry]
     personality_type: Optional[str] = "empathetic"
+    settings: Dict[str, Any] = None
 
 # Dependency to get the service
 def get_service() -> DreamJournalService:
@@ -101,7 +109,7 @@ async def qa_analysis(
 ):
     """Perform Q&A analysis over multiple journal entries."""
     try:
-        result = await journal_service.get_cumulative_analysis(request.entries, request.personality)
+        result = await journal_service.get_cumulative_analysis(request.entries, request.personality, request.settings)
         return {"answer": result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Q&A analysis failed: {str(e)}")
@@ -150,12 +158,12 @@ async def get_personalities():
 
 @app.post("/custom-question")
 async def custom_question(
-    request: QARequest,
+    request: QARequestCustom,
     journal_service: DreamJournalService = Depends(get_service)
 ):
     """Handle custom questions about dreams."""
     try:
-        result = await journal_service.ask_custom_question(request.question, request.entries, request.personality)
+        result = await journal_service.ask_custom_question(request.question, request.entries, request.personality, request.settings)
         return {"answer": result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Custom question failed: {str(e)}")
