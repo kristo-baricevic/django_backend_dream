@@ -72,6 +72,90 @@ class JournalEntry(BaseModel):
     created_at: datetime
     content: str
 
+class AstrologyKnowledgeBase:
+    """Direct file lookup for astrology references - no vector search needed"""
+    def __init__(self, base_directory: str = "knowledge_base/astrology"):
+        self.base_directory = base_directory
+        
+    def get_sign_context(self, sign: str, sign_type: str) -> str:
+        """
+        Retrieve astrology context for a specific sign.
+        sign_type: 'sun', 'moon', or 'rising'
+        """
+        if not sign:
+            return ""
+            
+        file_path = os.path.join(
+            self.base_directory, 
+            f"{sign_type}_signs", 
+            f"{sign.lower()}.txt"
+        )
+        
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+                print(f"✅ Loaded {sign_type} sign: {sign}")
+                return content
+        except FileNotFoundError:
+            print(f"⚠️  Astrology file not found: {file_path}")
+            return ""
+        except Exception as e:
+            print(f"❌ Error reading astrology file: {e}")
+            return ""
+    
+    def get_full_chart_context(self, sun: str = None, moon: str = None, rising: str = None) -> str:
+        """Get combined context for user's full astrological chart"""
+        contexts = []
+        
+        if sun:
+            sun_context = self.get_sign_context(sun, "sun")
+            if sun_context:
+                contexts.append(f"SUN SIGN ({sun.upper()}):\n{sun_context}")
+        
+        if moon:
+            moon_context = self.get_sign_context(moon, "moon")
+            if moon_context:
+                contexts.append(f"MOON SIGN ({moon.upper()}):\n{moon_context}")
+        
+        if rising:
+            rising_context = self.get_sign_context(rising, "rising")
+            if rising_context:
+                contexts.append(f"RISING SIGN ({rising.upper()}):\n{rising_context}")
+        
+        if not contexts:
+            return ""
+        
+        combined = "\n\n".join(contexts)
+        print(f"📊 Assembled astrology context: {len(combined)} characters")
+        return combined
+
+class PersonalityKnowledgeBase:
+    """Direct file lookup for MBTI personality types"""
+    def __init__(self, base_directory: str = "knowledge_base/personality"):
+        self.base_directory = base_directory
+    
+    def get_personality_context(self, personality_type: str) -> str:
+        """Retrieve MBTI personality context"""
+        if not personality_type:
+            return ""
+        
+        file_path = os.path.join(
+            self.base_directory,
+            f"{personality_type.upper()}.txt"
+        )
+        
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+                print(f"✅ Loaded personality type: {personality_type}")
+                return content
+        except FileNotFoundError:
+            print(f"⚠️  Personality file not found: {file_path}")
+            return ""
+        except Exception as e:
+            print(f"❌ Error reading personality file: {e}")
+            return ""
+
 class DreamKnowledgeBase:
     def __init__(self, files_directory: str, vector_directory: str, embeddings):
         self.files_directory = files_directory
@@ -191,6 +275,10 @@ class DreamJournalAnalyzer:
             vector_directory="knowledge_base/vectors",
             embeddings=self.embeddings
         )
+
+        self.astrology_kb = AstrologyKnowledgeBase()
+        self.personality_kb = PersonalityKnowledgeBase()
+
         
     async def initialize_knowledge_base(self):
         """Call this during service startup."""
@@ -288,17 +376,66 @@ class DreamJournalAnalyzer:
         print(f"=== END ENHANCED SEARCH PIPELINE ===\n")
         
         return unique_docs
+
+    def assemble_full_context( self, dream_theory_docs: List[Document], settings: Dict[str, Any] = None) -> str:
+        """
+        Assemble full context with proper weighting:
+        - Dream theory: 70%
+        - Astrology: 15%
+        - Personality: 15%
+        """
+        print(f"\n=== ASSEMBLING FULL CONTEXT ===")
         
-    async def qa_analysis(self, entries: List[JournalEntry], personality: str = None, settings: Dict[str, Any] = None) -> str:    
-        """
-        Function 1: Generate cumulative analysis using QA chain over journal entries.
-        Equivalent to the qa() function in your JS code.
-        """
+        # 70% - Dream theory context
+        dream_context = ""
+        if dream_theory_docs:
+            dream_context = "\n\n=== DREAM INTERPRETATION THEORY (Primary Reference) ===\n"
+            for i, doc in enumerate(dream_theory_docs, 1):
+                snippet = doc.page_content[:400] + "..." if len(doc.page_content) > 400 else doc.page_content
+                snippet = snippet.replace("{", "{{").replace("}", "}}")
+                dream_context += f"\n[Reference {i}]\n{snippet}\n"
+            print(f"✅ Dream theory context: {len(dream_context)} chars")
+        
+        # 15% - Astrology context
+        astrology_context = ""
+        if settings and settings.get('astrology'):
+            astro = settings['astrology']
+            astro_text = self.astrology_kb.get_full_chart_context(
+                sun=astro.get('sun'),
+                moon=astro.get('moon'),
+                rising=astro.get('rising')
+            )
+            if astro_text:
+                astrology_context = f"\n\n=== ASTROLOGICAL PROFILE (Secondary Context) ===\n{astro_text}\n"
+                print(f"✅ Astrology context: {len(astrology_context)} chars")
+        
+        # 15% - Personality context
+        personality_context = ""
+        if settings and settings.get('personality'):
+            personality_text = self.personality_kb.get_personality_context(
+                settings['personality']
+            )
+            if personality_text:
+                personality_context = f"\n\n=== PERSONALITY PROFILE (Secondary Context) ===\n{personality_text}\n"
+                print(f"✅ Personality context: {len(personality_context)} chars")
+        
+        full_context = dream_context + astrology_context + personality_context
+        
+        print(f"📊 Total context assembled: {len(full_context)} characters")
+        print(f"   - Dream theory: ~{len(dream_context)} chars (~70%)")
+        print(f"   - Astrology: ~{len(astrology_context)} chars (~15%)")
+        print(f"   - Personality: ~{len(personality_context)} chars (~15%)")
+        print(f"=== END CONTEXT ASSEMBLY ===\n")
+        
+        return full_context
+
+        
+    async def qa_analysis( self, entries: List[JournalEntry], personality: str = None, settings: Dict[str, Any] = None) -> str:    
+        """Cumulative analysis with RAG architecture"""
         try:
-            print(f"\n=== Q&A ANALYSIS WITH KNOWLEDGE BASE ===")
-            print(f"Analyzing {len(entries)} journal entries")
+            print(f"\n=== Q&A ANALYSIS WITH RAG ===")
             
-            # Convert entries to LangChain Documents
+            # Convert entries to documents
             docs = [
                 Document(
                     page_content=entry.content,
@@ -307,78 +444,53 @@ class DreamJournalAnalyzer:
                 for entry in entries
             ]
             
-            if not docs:
-                raise ValueError("No journal entries provided")
-            
-            # Create vector store from documents
             vectorstore = FAISS.from_documents(docs, self.embeddings)
             
-            print(f"Created vector store from {len(docs)} journal entries")
+            # Get dream theory context (70%)
+            dream_theory_docs = await self.enhanced_knowledge_search(entries)
             
-            # Search knowledge base for context
-            print(f"Searching knowledge base for additional context...")
-            # knowledge_docs = await self.knowledge_base.search_relevant_knowledge(question, k=2)
-            knowledge_docs = await self.enhanced_knowledge_search(entries)
-
-            knowledge_context = ""
-            if knowledge_docs:
-                print(f"Adding {len(knowledge_docs)} knowledge references to Q&A context")
-                knowledge_context = "\n\nReference material:\n"
-                for doc in knowledge_docs:
-                    snippet = doc.page_content[:200] + "..." if len(doc.page_content) > 200 else doc.page_content
-                    snippet = snippet.replace("{", "{{").replace("}", "}}")
-                    knowledge_context += f"- {snippet}\n"
-            else:
-                print("No relevant knowledge found - proceeding with journal entries only")
-            
+            # Assemble full context (dream + astrology + personality)
+            full_context = self.assemble_full_context(dream_theory_docs, settings)
 
             personality_instruction = ""
             if personality:
-                personality_instruction = f"\n\nPersonality and Approach:\n{personality}\n\nEmbody this personality and approach in your analysis and response style.\n"
+                personality_instruction = f"\n\nAnalysis Style:\n{personality}\n"
 
             settings_instruction = ""
             if settings:
-                settings_instruction = "\n\nUser Profile Information:\n"
-                
-                # Astrology
-                if settings.get('astrology'):
-                    astro = settings['astrology']
-                    settings_instruction += f"Astrological Signs: Sun in {astro.get('sun', 'unknown')}, Moon in {astro.get('moon', 'unknown')}, Rising in {astro.get('rising', 'unknown')}\n"
-                
-                # Occupation and personality
+                settings_instruction = "\n\nUser Background:\n"
                 if settings.get('occupation'):
                     settings_instruction += f"Occupation: {settings['occupation']}\n"
-                if settings.get('personality'):
-                    settings_instruction += f"Personality Type: {settings['personality']}\n"
-                
-                # Medical history
                 if settings.get('medicalHistory'):
                     med = settings['medicalHistory']
                     if med.get('psychological'):
-                        settings_instruction += f"Psychological History: {', '.join(med['psychological'])}\n"
+                        settings_instruction += f"Psychological history: {', '.join(med['psychological'])}\n"
                     if med.get('physical'):
-                        settings_instruction += f"Physical Health: {', '.join(med['physical'])}\n"
-                
-                settings_instruction += "\nUse this profile information to provide personalized dream interpretation that considers the user's background, mental health, and life circumstances.\n"
+                        settings_instruction += f"Physical health: {', '.join(med['physical'])}\n"
 
-            # Create QA chain with enhanced prompt
             qa_prompt = f"""
-            You are a dream interpretation expert. {personality_instruction} {settings_instruction}
-            
-            Analyze the journal entries using SPECIFICALLY the dream interpretation theory provided below. You MUST reference and apply these concepts directly in your analysis.
+            You are a dream analyst. Analyze the patterns ACROSS these dreams, not individual dreams.
 
-            REQUIRED SOURCE MATERIAL TO USE:
-            {knowledge_context}
+            {personality_instruction}{settings_instruction}
 
-            Apply the above dream interpretation principles to analyze patterns and themes in these journal entries: {{context}}
+            KNOWLEDGE BASE (cite specific theories when relevant):
+            {full_context}
 
-            Answer by directly referencing and applying the dream interpretation theory provided above:"""
-            
-            print(f"Final Q&A prompt includes:")
-            print(f"  - Journal entries context: YES")
-            print(f"  - Knowledge base context: {'YES' if knowledge_context else 'NO'}")
-            print(f"  - Total context length: {len(qa_prompt)} characters")
-            print(f"  - Total context: {knowledge_context}")
+            Journal Entries: {{context}}
+
+            STRICT FORMAT - Write 3-4 paragraphs following this structure:
+
+            Paragraph 1: What is the MAIN THEME connecting these dreams? (not individual dream summaries)
+            Paragraph 2: How does dream interpretation theory explain this pattern? (cite specific concepts from the knowledge base above)
+            Paragraph 3: How does the dreamer's astrological/personality profile influence this? (connect to actual dream content, not generic descriptions)
+            Paragraph 4: What does this pattern suggest about the dreamer's current life?
+
+            FORBIDDEN:
+            - Do NOT list dreams individually with numbers
+            - Do NOT repeat personality/astrology descriptions without connecting them to specific dream events
+            - Do NOT make generic statements like "dreams may symbolize"
+
+            Required analysis:"""
 
             qa_chain = RetrievalQA.from_chain_type(
                 llm=self.llm,
@@ -387,39 +499,31 @@ class DreamJournalAnalyzer:
                 chain_type_kwargs={"prompt": PromptTemplate.from_template(qa_prompt)}
             )
             
-            print(f"Executing Q&A chain...")
-            # Get answer
-            question = "Provide a comprehensive analysis of these journal entries, identifying patterns, themes, and emotional trends over time."
-
-            
+            question = "Analyze these dream entries comprehensively."
             draft = qa_chain.run(question)
-            print(f"Stage 1 draft length: {len(draft)} characters")
 
-            # --- Stage 2: Refinement ---
             refine_prompt = f"""
-            Here is your first draft interpretation of the dream entries:
-
-            --- BEGIN DRAFT ---
+            This interpretation lists dreams individually instead of finding patterns:
             {draft}
-            --- END DRAFT ---
 
-            Refine this analysis by:
-            - Do not refer to "the dreamer." Address the reader as if they are your patient. Use "you" and other pronouns.
-            - Instead of addressing dreams sequentially, focus on finding patterns linking the dreams together.
-            - Making it clearer, structured, and concise
-            - Highlighting key symbols and emotional themes
-            - Quote the knowledge context if applicable
-            - Grounding insights in the dream interpretation theory provided, and reference your citations
-            - Highlight the main symbols and theme and give a conclusion with some life advice or insight
-            - Avoid recapping the dream's plot. Speak only of connections between dreams, themes, emotions, symbols, and subconscious.
+            REWRITE to:
+            1. Remove ALL numbered lists
+            2. Write in flowing paragraphs that connect multiple dreams
+            3. Start with the overarching pattern you see across ALL dreams
+            4. Reference specific theories from the material below
 
-            THEORY:
-            {knowledge_context}
+            Refine this by:
+            - Address the reader directly using "you"
+            - Focus on patterns linking dreams together
+            - Ground insights in dream interpretation theory
+            - Highlight key symbols and themes
+            - Provide concluding life advice
+
+            {full_context}
 
             Journal Entries: {{context}}
 
-            Return the refined interpretation:
-            """
+            Rewrite as cohesive interpretation:"""
 
             refine_chain = RetrievalQA.from_chain_type(
                 llm=self.llm,
@@ -427,17 +531,13 @@ class DreamJournalAnalyzer:
                 retriever=vectorstore.as_retriever(search_kwargs={"k": 4}),
                 chain_type_kwargs={"prompt": PromptTemplate.from_template(refine_prompt)}
             )
-            refined = refine_chain.run("Refine the draft interpretation.")
+            refined = refine_chain.run("Refine the interpretation.")
 
-            print(f"Stage 2 refinement length: {len(refined)} characters")
-
-            print(f"=== END Q&A ANALYSIS ===\n")
-            
             return refined
             
         except Exception as error:
-            print(f'Error in QA process: {error}')
-            raise Exception('Failed to process QA request')
+            print(f'Error in QA: {error}')
+            raise
 
     async def ai_generate(self, question: str) -> str:
         """
@@ -452,13 +552,17 @@ class DreamJournalAnalyzer:
             print(f'Error in AI generation: {error}')
             raise Exception('Failed to generate AI content')
 
-    async def custom_question_analysis(self, custom_question: str, entries: List[JournalEntry], personality: str = None, settings: Dict[str, Any] = None) -> str:
-        """Handle custom user questions with knowledge base integration."""
+    async def custom_question_analysis(
+        self, 
+        custom_question: str, 
+        entries: List[JournalEntry], 
+        personality: str = None, 
+        settings: Dict[str, Any] = None
+    ) -> str:
+        """Handle custom questions with RAG architecture"""
         try:
             print(f"\n=== CUSTOM QUESTION ANALYSIS ===")
-            print(f"Custom Question: {custom_question}")
             
-            # Convert entries to documents
             docs = [
                 Document(
                     page_content=entry.content,
@@ -467,59 +571,26 @@ class DreamJournalAnalyzer:
                 for entry in entries
             ]
             
-            # Create vector store
             vectorstore = FAISS.from_documents(docs, self.embeddings)
             
-            # Get knowledge base context
-            knowledge_docs = await self.enhanced_knowledge_search(entries)
-            knowledge_context = ""
-            if knowledge_docs:
-                knowledge_context = "\n\nRelevant dream interpretation theory:\n"
-                for doc in knowledge_docs:
-                    snippet = doc.page_content[:300] + "..." if len(doc.page_content) > 300 else doc.page_content
-                    snippet = snippet.replace("{", "{{").replace("}", "}}")
-                    knowledge_context += f"- {snippet}\n"
+            # Get full context
+            dream_theory_docs = await self.enhanced_knowledge_search(entries)
+            full_context = self.assemble_full_context(dream_theory_docs, settings)
 
             personality_instruction = ""
             if personality:
-                personality_instruction = f"\n\nPersonality and Approach:\n{personality}\n\nEmbody this personality and approach in your response style.\n"
+                personality_instruction = f"\n\nResponse Style:\n{personality}\n"
 
-            if settings:
-                settings_instruction = "\n\nUser Profile Information:\n"
-                
-                # Astrology
-                if settings.get('astrology'):
-                    astro = settings['astrology']
-                    settings_instruction += f"Astrological Signs: Sun in {astro.get('sun', 'unknown')}, Moon in {astro.get('moon', 'unknown')}, Rising in {astro.get('rising', 'unknown')}\n"
-                
-                # Occupation and personality
-                if settings.get('occupation'):
-                    settings_instruction += f"Occupation: {settings['occupation']}\n"
-                if settings.get('personality'):
-                    settings_instruction += f"Personality Type: {settings['personality']}\n"
-                
-                # Medical history
-                if settings.get('medicalHistory'):
-                    med = settings['medicalHistory']
-                    if med.get('psychological'):
-                        settings_instruction += f"Psychological History: {', '.join(med['psychological'])}\n"
-                    if med.get('physical'):
-                        settings_instruction += f"Physical Health: {', '.join(med['physical'])}\n"
-                
-                settings_instruction += "\nUse this profile information to provide personalized dream interpretation that considers the user's background, mental health, and life circumstances.\n"
-            # Create prompt with user's question
             prompt = f"""
-            Answer the following question about the dream journal entries using the provided dream interpretation theory.
-
-            {personality_instruction}{settings_instruction}
+            Answer the following question about the dream journal entries.
+            {personality_instruction}
             
-            {knowledge_context}
+            {full_context}
             
             Journal Entries: {{context}}
             Question: {custom_question}
             Answer:"""
             
-            # Create QA chain
             qa_chain = RetrievalQA.from_chain_type(
                 llm=self.llm,
                 chain_type="stuff", 
@@ -531,118 +602,174 @@ class DreamJournalAnalyzer:
             return result
             
         except Exception as error:
-            print(f'Error in custom question analysis: {error}')
-            raise Exception('Failed to process custom question')
+            print(f'Error in custom question: {error}')
+            raise
 
-    async def analyze_entry(self, content: str, personality_type: str = "empathetic") -> JournalAnalysis:
-        """
-        Function 3: Analyze journal entry with structured output.
-        Equivalent to the analyze() function in your JS code.
-        """
+    async def analyze_entry(self, content: str, personality_type: str = "empathetic", settings: Dict[str, Any] = None) -> JournalAnalysis:
+        """Analyze single entry with RAG architecture"""
         try:
-            print(f"\n=== KNOWLEDGE BASE SEARCH ===")
-            print(f"Searching knowledge base for: '{content[:100]}...'")
-            
-            # Search for relevant dream interpretation knowledge
-            # knowledge_docs = await self.knowledge_base.search_relevant_knowledge(content, k=3)
             fake_entry = JournalEntry(id="temp", created_at=datetime.now(), content=content)
-            knowledge_docs = await self.enhanced_knowledge_search([fake_entry])
-
-            print(f"Found {len(knowledge_docs)} relevant knowledge documents")
+            dream_theory_docs = await self.enhanced_knowledge_search([fake_entry])
             
-            knowledge_context = ""
-            
-            if knowledge_docs:
-                print(f"Knowledge documents retrieved:")
-                knowledge_context = "\n\nRelevant dream interpretation references:\n"
-                for i, doc in enumerate(knowledge_docs, 1):
-                    # Limit context length
-                    snippet = doc.page_content[:300] + "..." if len(doc.page_content) > 300 else doc.page_content
-                    knowledge_context += f"{i}. {snippet}\n"
-                    
-                    # Log what was found
-                    source_file = doc.metadata.get('source', 'Unknown file')
-                    print(f"  {i}. From: {source_file}")
-                    print(f"     Content preview: {snippet[:150]}...")
-            else:
-                print("No relevant knowledge found - proceeding with basic analysis")
+            full_context = self.assemble_full_context(dream_theory_docs, settings)
             
             personality = get_personality(personality_type)
             
             prompt = f"""
             {personality}
             
-            Analyze the following dream journal entry. If relevant references are provided below, incorporate insights from established dream interpretation theory into your analysis.
+            Analyze this dream journal entry using the reference material below.
             
-            {knowledge_context}
+            {full_context}
             
-            Consider the FULL RANGE of emotions present. Choose the PRIMARY emotion from these options: joy, sadness, anger, fear, surprise, disgust, anxiety, contentment, excitement, melancholy
+            Choose the PRIMARY emotion from: joy, sadness, anger, fear, surprise, disgust, anxiety, contentment, excitement, melancholy
             
-            Do NOT default to excitement - carefully consider which emotion best represents the overall feeling of the dream.
-
-            Examples of mood analysis:
-            - Flying dreams often indicate "joy" or "contentment"  
-            - Being chased indicates "fear" or "anxiety"
-            - Losing something indicates "sadness" or "melancholy"
-
-            Return ONLY a valid JSON response with these exact fields:
-            
+            Return ONLY valid JSON:
             {{
-                "mood": "choose one: joy, sadness, anger, fear, surprise, disgust, anxiety, contentment, excitement, melancholy",
-                "summary": "brief summary of the dream",
+                "mood": "one of the emotions above",
+                "summary": "brief summary",
                 "negative": true or false,
-                "subject": "creative title for the dream", 
-                "color": "hex color code representing the mood",
-                "interpretation": "5-6 sentence analysis incorporating dream theory if available, with song and snack suggestions",
-                "sentiment_score": integer from -10 to 10
+                "subject": "creative title",
+                "color": "hex color",
+                "interpretation": "5-6 sentence analysis with song and snack suggestions",
+                "sentiment_score": -10 to 10
             }}
             
-            Dream Journal Entry: {content}
+            Dream: {content}
             
-            Return only the JSON object, no other text:
+            JSON only:
             """
-            
-            print(f"\n=== FINAL PROMPT TO LLM ===")
-            print(f"Prompt length: {len(prompt)} characters")
-            print(f"Knowledge context length: {len(knowledge_context)} characters")
-            if knowledge_context:
-                print(f"Knowledge integration: YES - {len(knowledge_docs)} references included")
-            else:
-                print(f"Knowledge integration: NO - proceeding without references")
-            print(f"Full prompt preview (first 500 chars):")
-            print(f"{prompt[:500]}...")
-            print(f"=== END PROMPT PREVIEW ===\n")
             
             model = ChatOpenAI(temperature=0.3, model_name='gpt-3.5-turbo')
             result = model.invoke(prompt)
-            result_content = result.content
             
-            print(f"Raw LLM output: {result_content}")
+            json_data = json.loads(result.content)
             
-            # Parse JSON directly
-            json_data = json.loads(result_content)
-            
-            # Create JournalAnalysis object manually
             parsed_result = JournalAnalysis(
                 mood=EmotionType(json_data['mood']),
                 summary=json_data['summary'],
                 negative=json_data['negative'],
                 subject=json_data['subject'],
-                color=json_data['color'],
+                color=get_emotion_color(EmotionType(json_data['mood'])),
                 interpretation=json_data['interpretation'],
                 sentiment_score=json_data['sentiment_score']
             )
             
-            print(f"Parsed mood: {parsed_result.mood}")
-            
-            # Set the color based on mood
-            parsed_result.color = get_emotion_color(parsed_result.mood)
-            
             return parsed_result
             
         except Exception as error:
-            print(f'Failed to parse analysis result: {error}')
-            raise Exception('Failed to analyze dream journal entry')
+            print(f'Failed to analyze: {error}')
+            raise
+
+    # async def analyze_entry(self, content: str, personality_type: str = "empathetic") -> JournalAnalysis:
+    #     """
+    #     Function 3: Analyze journal entry with structured output.
+    #     Equivalent to the analyze() function in your JS code.
+    #     """
+    #     try:
+    #         print(f"\n=== KNOWLEDGE BASE SEARCH ===")
+    #         print(f"Searching knowledge base for: '{content[:100]}...'")
+            
+    #         # Search for relevant dream interpretation knowledge
+    #         # knowledge_docs = await self.knowledge_base.search_relevant_knowledge(content, k=3)
+    #         fake_entry = JournalEntry(id="temp", created_at=datetime.now(), content=content)
+    #         knowledge_docs = await self.enhanced_knowledge_search([fake_entry])
+
+    #         print(f"Found {len(knowledge_docs)} relevant knowledge documents")
+            
+    #         knowledge_context = ""
+            
+    #         if knowledge_docs:
+    #             print(f"Knowledge documents retrieved:")
+    #             knowledge_context = "\n\nRelevant dream interpretation references:\n"
+    #             for i, doc in enumerate(knowledge_docs, 1):
+    #                 # Limit context length
+    #                 snippet = doc.page_content[:300] + "..." if len(doc.page_content) > 300 else doc.page_content
+    #                 knowledge_context += f"{i}. {snippet}\n"
+                    
+    #                 # Log what was found
+    #                 source_file = doc.metadata.get('source', 'Unknown file')
+    #                 print(f"  {i}. From: {source_file}")
+    #                 print(f"     Content preview: {snippet[:150]}...")
+    #         else:
+    #             print("No relevant knowledge found - proceeding with basic analysis")
+            
+    #         personality = get_personality(personality_type)
+            
+    #         prompt = f"""
+    #         {personality}
+            
+    #         Analyze the following dream journal entry. If relevant references are provided below, incorporate insights from established dream interpretation theory into your analysis.
+            
+    #         {knowledge_context}
+            
+    #         Consider the FULL RANGE of emotions present. Choose the PRIMARY emotion from these options: joy, sadness, anger, fear, surprise, disgust, anxiety, contentment, excitement, melancholy
+            
+    #         Do NOT default to excitement - carefully consider which emotion best represents the overall feeling of the dream.
+
+    #         Examples of mood analysis:
+    #         - Flying dreams often indicate "joy" or "contentment"  
+    #         - Being chased indicates "fear" or "anxiety"
+    #         - Losing something indicates "sadness" or "melancholy"
+
+    #         Return ONLY a valid JSON response with these exact fields:
+            
+    #         {{
+    #             "mood": "choose one: joy, sadness, anger, fear, surprise, disgust, anxiety, contentment, excitement, melancholy",
+    #             "summary": "brief summary of the dream",
+    #             "negative": true or false,
+    #             "subject": "creative title for the dream", 
+    #             "color": "hex color code representing the mood",
+    #             "interpretation": "5-6 sentence analysis incorporating dream theory if available, with song and snack suggestions",
+    #             "sentiment_score": integer from -10 to 10
+    #         }}
+            
+    #         Dream Journal Entry: {content}
+            
+    #         Return only the JSON object, no other text:
+    #         """
+            
+    #         print(f"\n=== FINAL PROMPT TO LLM ===")
+    #         print(f"Prompt length: {len(prompt)} characters")
+    #         print(f"Knowledge context length: {len(knowledge_context)} characters")
+    #         if knowledge_context:
+    #             print(f"Knowledge integration: YES - {len(knowledge_docs)} references included")
+    #         else:
+    #             print(f"Knowledge integration: NO - proceeding without references")
+    #         print(f"Full prompt preview (first 500 chars):")
+    #         print(f"{prompt[:500]}...")
+    #         print(f"=== END PROMPT PREVIEW ===\n")
+            
+    #         model = ChatOpenAI(temperature=0.3, model_name='gpt-3.5-turbo')
+    #         result = model.invoke(prompt)
+    #         result_content = result.content
+            
+    #         print(f"Raw LLM output: {result_content}")
+            
+    #         # Parse JSON directly
+    #         json_data = json.loads(result_content)
+            
+    #         # Create JournalAnalysis object manually
+    #         parsed_result = JournalAnalysis(
+    #             mood=EmotionType(json_data['mood']),
+    #             summary=json_data['summary'],
+    #             negative=json_data['negative'],
+    #             subject=json_data['subject'],
+    #             color=json_data['color'],
+    #             interpretation=json_data['interpretation'],
+    #             sentiment_score=json_data['sentiment_score']
+    #         )
+            
+    #         print(f"Parsed mood: {parsed_result.mood}")
+            
+    #         # Set the color based on mood
+    #         parsed_result.color = get_emotion_color(parsed_result.mood)
+            
+    #         return parsed_result
+            
+    #     except Exception as error:
+    #         print(f'Failed to parse analysis result: {error}')
+    #         raise Exception('Failed to analyze dream journal entry')
 
     async def batch_analyze_entries(self, entries: List[JournalEntry], personality_type: str = "empathetic") -> List[JournalAnalysis]:
         """
