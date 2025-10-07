@@ -31,6 +31,7 @@ ALLOWED_HOSTS = [
     "dream-app-nu.vercel.app",
     "localhost",
     "127.0.0.1",
+    "104.236.96.193"
 ]
 
 CORS_ALLOW_CREDENTIALS = True
