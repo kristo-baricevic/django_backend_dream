@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Analysis, JournalEntry, CumulativeAnalysis
+from .models import Analysis, JournalEntry, CumulativeAnalysis, CustomQuestion
 
 class AnalysisSerializer(serializers.ModelSerializer):
     class Meta:
@@ -21,3 +21,11 @@ class CumulativeAnalysisSerializer(serializers.ModelSerializer):
         model = CumulativeAnalysis
         fields = ['id', 'created_at', 'updated_at', 'user', 'analysis', 'doctor_personality']
         read_only_fields = ['id', 'created_at', 'updated_at']
+
+
+class CustomQuestionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CustomQuestion
+        fields = ['id', 'created_at', 'updated_at', 'user', 'question', 'answer', 'doctor_personality']
+        read_only_fields = ['id', 'created_at', 'updated_at']
+

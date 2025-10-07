@@ -53,3 +53,18 @@ class CumulativeAnalysis(models.Model):
     class Meta:
         indexes = [models.Index(fields=['user'])]
 
+class CustomQuestion(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    user = models.ForeignKey('User', related_name='custom_question', on_delete=models.CASCADE, null=True, blank=True)
+    question = models.TextField()
+    answer = models.TextField()
+    doctor_personality = models.TextField(blank=True, default='')
+
+
+    class Meta:
+        indexes = [models.Index(fields=['user'])]
+
+
+

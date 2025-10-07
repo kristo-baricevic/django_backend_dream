@@ -847,6 +847,20 @@ class DreamJournalAnalyzer:
             )
             
             result = qa_chain.run(custom_question)
+            user_id = settings.get('user_id') if settings else None
+            doctor_personality = settings.get('doctorPersonality', '') if settings else ''
+
+            # user = entries[0].user if entries and entries[0].user else None
+            saved_question = await sync_to_async(CustomQuestion.objects.create)(
+                user_id=user_id,
+                analysis=result,
+                question=custom_question,
+                answer=result,
+                doctor_personality=doctor_personality,
+
+            )
+            print(f"💾 Saved cumulative analysis: {saved_question.id}")
+
             return result
             
         except Exception as error:

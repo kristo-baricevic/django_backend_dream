@@ -13,4 +13,6 @@ urlpatterns = [
     path('entries/<uuid:id>/delete/', delete_entry, name='delete_entry'),
     path('entries/moods/', views.MoodListView.as_view(), name='get_moods'),
     path('cumulative-analyses/', views.CumulativeAnalysisListView.as_view(), name='cumulative-analysis-list'),
+    path('custom-questions/', views.CustomQuestionListView.as_view(), name='custom-question-list'),
+
 ]
