@@ -16,7 +16,7 @@ from langchain.prompts import PromptTemplate
 from langchain.output_parsers import PydanticOutputParser
 import openai
 from asgiref.sync import sync_to_async
-from myapp.models import CumulativeAnalysis
+from myapp.models import CumulativeAnalysis, CustomQuestion
 
 # Emotion types and colors (equivalent to your emotions parameter)
 class EmotionType(str, Enum):
@@ -853,7 +853,6 @@ class DreamJournalAnalyzer:
             # user = entries[0].user if entries and entries[0].user else None
             saved_question = await sync_to_async(CustomQuestion.objects.create)(
                 user_id=user_id,
-                analysis=result,
                 question=custom_question,
                 answer=result,
                 doctor_personality=doctor_personality,
