@@ -6,7 +6,7 @@ from rest_framework.response import Response
 from rest_framework.generics import ListAPIView
 from rest_framework.pagination import PageNumberPagination
 from rest_framework import status
-from .models import Analysis, JournalEntry, CumulativeAnalysis
+from .models import Analysis, JournalEntry, CumulativeAnalysis, CustomQuestion
 from .serializers import AnalysisSerializer, JournalEntrySerializer, CumulativeAnalysisSerializer, CustomQuestionSerializer
 from rest_framework.permissions import AllowAny
 from django.db.models import Q
