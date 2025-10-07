@@ -47,6 +47,8 @@ CSRF_TRUSTED_ORIGINS = [
     "https://dream-journal-app.com",
     "https://www.dream-journal-app.com",
     "https://dream-app-nu.vercel.app",
+    'https://104.236.96.193',
+    'http://104.236.96.193',
 ]
 
 
@@ -162,7 +164,7 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 STATIC_ROOT = '/app/staticfiles/'
-  
+
 # Default primary key field type
 # https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field
 
