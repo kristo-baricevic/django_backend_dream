@@ -56,7 +56,7 @@ services:
     depends_on:
       - django
       - fastapi
-    restart: unlżss-stopped
+    restart: unless-stopped
 
 
 volumes:
