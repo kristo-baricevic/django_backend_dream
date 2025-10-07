@@ -40,3 +40,16 @@ class Analysis(models.Model):
 
     class Meta:
         indexes = [models.Index(fields=['user'])]
+
+class CumulativeAnalysis(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    user = models.ForeignKey('User', related_name='cumulative_analyses', on_delete=models.CASCADE, null=True, blank=True)
+    analysis = models.TextField()
+    doctor_personality = models.TextField(blank=True, default='')
+
+
+    class Meta:
+        indexes = [models.Index(fields=['user'])]
+

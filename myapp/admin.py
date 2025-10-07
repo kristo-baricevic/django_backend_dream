@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import User, JournalEntry, Analysis
+from .models import User, JournalEntry, Analysis, CumulativeAnalysis
 
 class AnalysisInline(admin.StackedInline):
     model = Analysis
@@ -26,3 +26,9 @@ class AnalysisAdmin(admin.ModelAdmin):
     list_display = ("id", "entry", "user", "mood", "negative", "created_at")
     search_fields = ("user__email", "mood", "subject")
     list_filter = ("negative", "created_at")
+
+@admin.register(CumulativeAnalysis)
+class CumulativeAnalysisAdmin(admin.ModelAdmin):
+    list_display = ['id', 'created_at', 'doctor_personality', 'user']
+    list_editable = ['doctor_personality']
+

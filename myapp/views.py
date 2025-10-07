@@ -6,8 +6,8 @@ from rest_framework.response import Response
 from rest_framework.generics import ListAPIView
 from rest_framework.pagination import PageNumberPagination
 from rest_framework import status
-from .models import Analysis, JournalEntry
-from .serializers import AnalysisSerializer, JournalEntrySerializer
+from .models import Analysis, JournalEntry, CumulativeAnalysis
+from .serializers import AnalysisSerializer, JournalEntrySerializer, CumulativeAnalysisSerializer
 from rest_framework.permissions import AllowAny
 from django.db.models import Q
 from django.utils.dateparse import parse_date
@@ -73,14 +73,55 @@ class MoodListView(ListAPIView):
         
         return Response({'moods': moods})
 
+class CumulativeAnalysisPagination(PageNumberPagination):
+    page_size = 10
+    page_size_query_param = 'page_size'
+    max_page_size = 100
+    page_query_param = 'page'
+
+class CumulativeAnalysisListView(ListAPIView):
+    serializer_class = CumulativeAnalysisSerializer
+    pagination_class = CumulativeAnalysisPagination
+    permission_classes = [AllowAny]
+
+    def get_queryset(self):
+        qs = CumulativeAnalysis.objects.all().order_by('-created_at')
+        
+        # if self.request.user and self.request.user.is_authenticated:
+        #     qs = qs.filter(user=self.request.user)
+    
+
+        doctor_personality = self.request.query_params.get('doctor_personality')
+        start_date = self.request.query_params.get('start_date')
+        end_date = self.request.query_params.get('end_date')
+        search = self.request.query_params.get('search')
+
+        if doctor_personality:
+            qs = qs.filter(doctor_personality__icontains=doctor_personality)
+        
+        if search:
+            qs = qs.filter(analysis__icontains=search)
+
+        if start_date:
+            start_date = parse_date(start_date)
+            if start_date:
+                qs = qs.filter(created_at__date__gte=start_date)
+        
+        if end_date:
+            end_date = parse_date(end_date)
+            if end_date:
+                qs = qs.filter(created_at__date__lte=end_date)
+
+        return qs
+
+
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def get_data(request):
     if request.user.is_authenticated:
         analyses = Analysis.objects.filter(user=request.user).order_by('created_at')
     else:
-        # For anonymous users, show all analyses or return empty
-        analyses = Analysis.objects.all().order_by('created_at')  # or Analysis.objects.none()
+        analyses = Analysis.objects.all().order_by('created_at')
     
     serializer = AnalysisSerializer(analyses, many=True)
     scores = [a.sentiment_score for a in analyses]
@@ -93,7 +134,7 @@ def get_entries(request):
     if request.user.is_authenticated:
         entries = JournalEntry.objects.filter(user=request.user).order_by('-created_at')
     else:
-        entries = JournalEntry.objects.all().order_by('-created_at')  # show all if anonymous
+        entries = JournalEntry.objects.all().order_by('-created_at')
     serializer = JournalEntrySerializer(entries, many=True)
     return Response(serializer.data)
 

@@ -15,6 +15,8 @@ from langchain.schema import Document
 from langchain.prompts import PromptTemplate
 from langchain.output_parsers import PydanticOutputParser
 import openai
+from asgiref.sync import sync_to_async
+from myapp.models import CumulativeAnalysis
 
 # Emotion types and colors (equivalent to your emotions parameter)
 class EmotionType(str, Enum):
@@ -429,13 +431,226 @@ class DreamJournalAnalyzer:
         
         return full_context
 
+    async def comprehensive_knowledge_retrieval(self, entries: List[JournalEntry], k: int = 20) -> List[Document]:
+        """
+        Single comprehensive retrieval pass to get ALL relevant knowledge.
+        This is more efficient than multiple small searches.
+        """
+        print(f"\n=== COMPREHENSIVE KNOWLEDGE RETRIEVAL ===")
         
-    async def qa_analysis( self, entries: List[JournalEntry], personality: str = None, settings: Dict[str, Any] = None) -> str:    
-        """Cumulative analysis with RAG architecture"""
-        try:
-            print(f"\n=== Q&A ANALYSIS WITH RAG ===")
+        # Build a rich, semantic query from dream content
+        query_components = []
+        
+        # 1. Extract actual dream elements
+        dream_elements = await self.extract_dream_elements(entries)
+        query_components.append(dream_elements)
+        
+        # 2. Include full dream content (don't truncate - embeddings handle this)
+        combined_content = " ".join([entry.content for entry in entries[-3:]])  # Last 3 entries
+        query_components.append(combined_content)
+        
+        # 3. Add theoretical framing to guide retrieval
+        query_components.append("dream interpretation psychological meaning symbolism theory analysis")
+        
+        # Build final query
+        full_query = " ".join(query_components)
+        
+        print(f"📝 Query length: {len(full_query)} chars")
+        print(f"🔍 Retrieving top {k} documents from knowledge base")
+        
+        # Single comprehensive search - let embeddings find what's relevant
+        docs = await self.knowledge_base.search_relevant_knowledge(full_query, k=k)
+        
+        # Optional: Use MMR for diversity to avoid redundant similar passages
+        if len(docs) > 10:
+            docs = await self.apply_mmr_reranking(docs, full_query, lambda_mult=0.7)
+        
+        print(f"✅ Retrieved {len(docs)} relevant knowledge passages")
+        print(f"=== END KNOWLEDGE RETRIEVAL ===\n")
+        
+        return docs
+
+
+    async def apply_mmr_reranking(self, docs: List[Document], query: str, lambda_mult: float = 0.5) -> List[Document]:
+        """
+        Maximal Marginal Relevance re-ranking to get diverse but relevant results.
+        Prevents retrieving 20 nearly-identical passages about the same topic.
+        """
+        if not docs or len(docs) <= 5:
+            return docs
+        
+        # Use vectorstore's MMR search if available
+        if hasattr(self.knowledge_base.vectorstore, 'max_marginal_relevance_search'):
+            return self.knowledge_base.vectorstore.max_marginal_relevance_search(
+                query, 
+                k=len(docs), 
+                lambda_mult=lambda_mult
+            )
+        
+        # Otherwise return as-is
+        return docs
+
+
+    def assemble_knowledge_context(self, knowledge_docs: List[Document], max_tokens: int = 8000) -> str:
+        """
+        Assemble knowledge base context efficiently.
+        Don't truncate individual docs - let them be full passages.
+        """
+        print(f"\n=== ASSEMBLING KNOWLEDGE CONTEXT ===")
+        
+        context_parts = ["=== DREAM INTERPRETATION KNOWLEDGE BASE ===\n"]
+        current_length = 0
+        docs_included = 0
+        
+        for i, doc in enumerate(knowledge_docs, 1):
+            source = doc.metadata.get('source', 'Unknown')
             
-            # Convert entries to documents
+            # Don't truncate - include full passage
+            passage = doc.page_content
+            passage_tokens = len(passage) // 4  # Rough estimate
+            
+            # Stop if we'd exceed token budget
+            if current_length + passage_tokens > max_tokens:
+                print(f"⚠️  Reached token limit, stopping at {docs_included} documents")
+                break
+            
+            # Escape any formatting characters
+            passage = passage.replace("{", "{{").replace("}", "}}")
+            
+            context_parts.append(f"\n[Source {i}: {source}]\n{passage}\n")
+            current_length += passage_tokens
+            docs_included += 1
+        
+        context = "\n".join(context_parts)
+        
+        print(f"✅ Assembled {docs_included}/{len(knowledge_docs)} documents")
+        print(f"📊 Approx {current_length} tokens")
+        print(f"=== END CONTEXT ASSEMBLY ===\n")
+        
+        return context
+
+
+    def assemble_user_context(self, settings: Dict[str, Any] = None) -> str:
+        """
+        Separate method for user-specific context (astrology, personality, medical).
+        Keep this lean - it's supplementary to dream theory.
+        """
+        context_parts = []
+        
+        if settings and settings.get('astrology'):
+            astro = settings['astrology']
+            astro_text = self.astrology_kb.get_full_chart_context(
+                sun=astro.get('sun'),
+                moon=astro.get('moon'),
+                rising=astro.get('rising')
+            )
+            if astro_text:
+                context_parts.append(f"=== ASTROLOGICAL PROFILE ===\n{astro_text}")
+        
+        if settings and settings.get('personality'):
+            personality_text = self.personality_kb.get_personality_context(
+                settings['personality']
+            )
+            if personality_text:
+                context_parts.append(f"=== PERSONALITY PROFILE ===\n{personality_text}")
+        
+        if settings:
+            user_bg = []
+            if settings.get('occupation'):
+                user_bg.append(f"Occupation: {settings['occupation']}")
+            if settings.get('medicalHistory'):
+                med = settings['medicalHistory']
+                if med.get('psychological'):
+                    user_bg.append(f"Psychological history: {', '.join(med['psychological'])}")
+                if med.get('physical'):
+                    user_bg.append(f"Physical health: {', '.join(med['physical'])}")
+            
+            if user_bg:
+                context_parts.append(f"=== USER BACKGROUND ===\n" + "\n".join(user_bg))
+        
+        return "\n\n".join(context_parts)
+
+
+    def validate_analysis_quality(self, analysis: str, knowledge_docs: List[Document]) -> Dict[str, Any]:
+        """
+        Validate that the analysis actually uses the knowledge base.
+        Returns metrics about knowledge base usage.
+        """
+        print(f"\n=== VALIDATING ANALYSIS QUALITY ===")
+        
+        # Extract key theoretical concepts from knowledge base
+        kb_concepts = set()
+        analysis_lower = analysis.lower()
+        
+        # Look for specific theoretical frameworks present in your knowledge base
+        theoretical_terms = [
+            "subjective dreams", "physical dreams", "spiritual dreams",
+            "astral experience", "subjective intelligence", 
+            "animal mind", "spiritual mind", "soul",
+            "subjective plane", "warning", "prophecy",
+            "allegory", "symbols", "telepathic",
+            "mental transmissions", "psychic currents"
+        ]
+        
+        concepts_used = [term for term in theoretical_terms if term in analysis_lower]
+        
+        # Check for forbidden terms (LLM using its own training instead of KB)
+        forbidden_terms = [
+            "jungian", "jung", "freud", "freudian", 
+            "collective unconscious", "shadow self", "anima", "animus",
+            "ego", "id", "superego"  # Unless these appear in your KB
+        ]
+        forbidden_found = [term for term in forbidden_terms if term in analysis_lower]
+        
+        # Check for unwanted citation language
+        citation_language = [
+            "quote 1", "quote 2", "quote 3", "quote 4",
+            "the knowledge base", "according to the theory",
+            "the text states"
+        ]
+        citations_visible = [phrase for phrase in citation_language if phrase in analysis_lower]
+        
+        metrics = {
+            "theoretical_concepts_used": concepts_used,
+            "forbidden_terms_found": forbidden_found,
+            "visible_citations": citations_visible,
+            "quality_score": len(concepts_used) - len(forbidden_found) - len(citations_visible)
+        }
+        
+        print(f"📊 Analysis Validation Results:")
+        print(f"   ✓ Theoretical concepts used: {len(concepts_used)}")
+        if concepts_used:
+            print(f"      {concepts_used}")
+        
+        if forbidden_found:
+            print(f"   ⚠️  Forbidden terms (using LLM training): {forbidden_found}")
+        
+        if citations_visible:
+            print(f"   ⚠️  Visible citation artifacts: {citations_visible}")
+        
+        print(f"   📈 Quality score: {metrics['quality_score']}")
+        
+        if len(concepts_used) < 2:
+            print(f"   ⚠️  WARNING: Analysis may not be using knowledge base theories!")
+        if forbidden_found:
+            print(f"   ⚠️  WARNING: Analysis using LLM training instead of knowledge base!")
+        if citations_visible:
+            print(f"   ⚠️  WARNING: Citation scaffolding visible in output!")
+        
+        print(f"=== END VALIDATION ===\n")
+        
+        return metrics
+
+
+    async def qa_analysis(self, entries: List[JournalEntry], personality: str = None, settings: Dict[str, Any] = None) -> str:    
+        """
+        Two-stage analysis: Extract relevant quotes first, then synthesize.
+        This forces the LLM to engage with the knowledge base content.
+        """
+        try:
+            print(f"\n=== DREAM ANALYSIS WITH ENHANCED RAG ===")
+            
+            # Create vectorstore from journal entries
             docs = [
                 Document(
                     page_content=entry.content,
@@ -443,100 +658,125 @@ class DreamJournalAnalyzer:
                 )
                 for entry in entries
             ]
-            
             vectorstore = FAISS.from_documents(docs, self.embeddings)
             
-            # Get dream theory context (70%)
-            dream_theory_docs = await self.enhanced_knowledge_search(entries)
+            # COMPREHENSIVE knowledge retrieval
+            knowledge_docs = await self.comprehensive_knowledge_retrieval(entries, k=20)
             
-            # Assemble full context (dream + astrology + personality)
-            full_context = self.assemble_full_context(dream_theory_docs, settings)
+            # STAGE 1: Extract relevant theoretical frameworks
+            print(f"\n=== STAGE 1: EXTRACTING RELEVANT FRAMEWORKS ===")
+            quotes_context = self.assemble_knowledge_context(knowledge_docs, max_tokens=6000)
+            
+            extraction_prompt = f"""You are analyzing dreams using specific dream interpretation theory. Your task is to identify the THEORETICAL FRAMEWORKS and CONCEPTS from the knowledge base that apply to these dreams.
 
-            personality_instruction = ""
+            KNOWLEDGE BASE:
+            {quotes_context}
+
+            DREAM CONTENT:
+            {{context}}
+
+            Extract 5-7 THEORETICAL CONCEPTS or FRAMEWORKS that are most relevant:
+            - Identify the theoretical classification system (e.g., types of dreams)
+            - Extract symbolic meanings for specific elements present in the dreams
+            - Note any interpretive frameworks or principles
+            - Highlight relevant warnings or prophecies the theory discusses
+
+            For each concept, provide:
+            1. The theoretical concept/framework
+            2. The specific passage or explanation from the knowledge base
+            3. How it applies to these specific dreams
+
+            Example format:
+            CONCEPT: Three types of dreams (subjective, physical, spiritual)
+            PASSAGE: "There are three pure types of dreams, namely, subjective, physical and spiritual. They relate to the past, present and future..."
+            APPLICATION: The time-travel dream showing past and future suggests a spiritual-type dream with prophetic elements.
+
+            Extract the relevant theoretical frameworks:"""
+
+            extract_chain = RetrievalQA.from_chain_type(
+                llm=self.llm,
+                chain_type="stuff",
+                retriever=vectorstore.as_retriever(search_kwargs={"k": min(6, len(docs))}),
+                chain_type_kwargs={"prompt": PromptTemplate.from_template(extraction_prompt)}
+            )
+            
+            relevant_quotes = extract_chain.run("Extract the most relevant theoretical frameworks for these dreams.")
+            print(f"✅ Extracted relevant theoretical frameworks:")
+            print(relevant_quotes)
+            print(f"=== END FRAMEWORK EXTRACTION ===\n")
+            
+            # STAGE 2: Synthesize analysis using extracted quotes
+            print(f"\n=== STAGE 2: SYNTHESIZING ANALYSIS ===")
+            
+            user_context = self.assemble_user_context(settings)
+            
+            synthesis_prompt_parts = [
+                "You are an expert dream analyst with deep knowledge of dream interpretation theory.",
+                "\n\nRELEVANT THEORETICAL FRAMEWORKS FOR THESE DREAMS:",
+                relevant_quotes,
+            ]
+            
+            if user_context:
+                synthesis_prompt_parts.append(f"\n\nDreamer's profile:\n{user_context}")
+            
             if personality:
-                personality_instruction = f"\n\nAnalysis Style:\n{personality}\n"
+                synthesis_prompt_parts.append(f"\n\nAnalysis style: {personality}")
+            
+            synthesis_prompt_parts.append("""
+            \n\nDream entries: {context}
 
-            settings_instruction = ""
-            if settings:
-                settings_instruction = "\n\nUser Background:\n"
-                if settings.get('occupation'):
-                    settings_instruction += f"Occupation: {settings['occupation']}\n"
-                if settings.get('medicalHistory'):
-                    med = settings['medicalHistory']
-                    if med.get('psychological'):
-                        settings_instruction += f"Psychological history: {', '.join(med['psychological'])}\n"
-                    if med.get('physical'):
-                        settings_instruction += f"Physical health: {', '.join(med['physical'])}\n"
+            YOUR TASK:
+            Write a cohesive dream analysis that naturally integrates the theoretical frameworks listed above.
 
-            qa_prompt = f"""
-            You are a dream analyst. Analyze the patterns ACROSS these dreams, not individual dreams.
+            STRUCTURE:
+            - Paragraph 1: Central pattern across all dreams
+            - Paragraphs 2-3: Deep analysis applying the theoretical frameworks (weave the concepts naturally into your interpretation)
+            - Paragraph 4: Connection to dreamer's profile and current life situation
 
-            {personality_instruction}{settings_instruction}
+            CRITICAL REQUIREMENTS:
+            - Apply the CONCEPTS and FRAMEWORKS from above naturally - write as if you've internalized this theory
+            - DO NOT use phrases like "Quote 1", "the framework states", "according to the knowledge base"
+            - Ground ALL symbolic interpretations in these specific theoretical concepts
+            - Write in flowing, authoritative paragraphs addressing the dreamer as "you"
+            - NO numbered lists, NO explicit citations
 
-            KNOWLEDGE BASE (cite specific theories when relevant):
-            {full_context}
+            STYLE:
+            Your analysis should read as if written by an expert who naturally thinks in terms of these specific dream theories.
+            The theoretical framework should be invisible scaffolding that shapes your insights - not visible citations.
 
-            Journal Entries: {{context}}
-
-            STRICT FORMAT - Write 3-4 paragraphs following this structure:
-
-            Paragraph 1: What is the MAIN THEME connecting these dreams? (not individual dream summaries)
-            Paragraph 2: How does dream interpretation theory explain this pattern? (cite specific concepts from the knowledge base above)
-            Paragraph 3: How does the dreamer's astrological/personality profile influence this? (connect to actual dream content, not generic descriptions)
-            Paragraph 4: What does this pattern suggest about the dreamer's current life?
-
-            FORBIDDEN:
-            - Do NOT list dreams individually with numbers
-            - Do NOT repeat personality/astrology descriptions without connecting them to specific dream events
-            - Do NOT make generic statements like "dreams may symbolize"
-
-            Required analysis:"""
-
-            qa_chain = RetrievalQA.from_chain_type(
+            Analysis:""")
+            
+            final_prompt = "".join(synthesis_prompt_parts)
+            
+            synthesis_chain = RetrievalQA.from_chain_type(
                 llm=self.llm,
                 chain_type="stuff",
-                retriever=vectorstore.as_retriever(search_kwargs={"k": 4}),
-                chain_type_kwargs={"prompt": PromptTemplate.from_template(qa_prompt)}
+                retriever=vectorstore.as_retriever(search_kwargs={"k": min(6, len(docs))}),
+                chain_type_kwargs={"prompt": PromptTemplate.from_template(final_prompt)}
             )
             
-            question = "Analyze these dream entries comprehensively."
-            draft = qa_chain.run(question)
+            result = synthesis_chain.run("Provide the dream analysis using the quoted theory.")
+            
+            # Validate that analysis actually uses knowledge base
+            validation_metrics = self.validate_analysis_quality(result, knowledge_docs)
+            
+            print(f"✅ Analysis complete")
+            print(f"=== END DREAM ANALYSIS ===\n")
+            user_id = settings.get('user_id') if settings else None
+            doctor_personality = settings.get('doctorPersonality', '') if settings else ''
 
-            refine_prompt = f"""
-            This interpretation lists dreams individually instead of finding patterns:
-            {draft}
-
-            REWRITE to:
-            1. Remove ALL numbered lists
-            2. Write in flowing paragraphs that connect multiple dreams
-            3. Start with the overarching pattern you see across ALL dreams
-            4. Reference specific theories from the material below
-
-            Refine this by:
-            - Address the reader directly using "you"
-            - Focus on patterns linking dreams together
-            - Ground insights in dream interpretation theory
-            - Highlight key symbols and themes
-            - Provide concluding life advice
-
-            {full_context}
-
-            Journal Entries: {{context}}
-
-            Rewrite as cohesive interpretation:"""
-
-            refine_chain = RetrievalQA.from_chain_type(
-                llm=self.llm,
-                chain_type="stuff",
-                retriever=vectorstore.as_retriever(search_kwargs={"k": 4}),
-                chain_type_kwargs={"prompt": PromptTemplate.from_template(refine_prompt)}
+            # user = entries[0].user if entries and entries[0].user else None
+            cumulative = await sync_to_async(CumulativeAnalysis.objects.create)(
+                user_id=user_id,
+                analysis=result,
+                doctor_personality=doctor_personality
             )
-            refined = refine_chain.run("Refine the interpretation.")
+            print(f"💾 Saved cumulative analysis: {cumulative.id}")
 
-            return refined
+            return result
             
         except Exception as error:
-            print(f'Error in QA: {error}')
+            print(f'❌ Error in QA analysis: {error}')
             raise
 
     async def ai_generate(self, question: str) -> str:
