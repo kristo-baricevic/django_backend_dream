@@ -1328,10 +1328,11 @@ class DreamJournalAnalyzer:
     
     async def custom_question_with_workflow(
         self,
-        custom_question: str,
+        question: str,
         entries: List[JournalEntry],
         personality: str = None,
-        settings: Dict[str, Any] = None
+        settings: Dict[str, Any] = None,
+        existing_workflow_id: str = None
     ) -> tuple[str, str]:  # Returns (result, workflow_id)
         """
         Enhanced custom question analysis with workflow tracking.
@@ -1339,18 +1340,27 @@ class DreamJournalAnalyzer:
         user_id = settings.get('user_id') if settings else None
         tracker = WorkflowTracker(
             workflow_type='custom_question',
-            routine_name=f'Custom Q&A: {custom_question[:50]}...',
+            routine_name=f'Custom Q&A: {question[:50]}...',
             user_id=user_id
         )
-        
-        try:
+
+        if existing_workflow_id:
+            from myapp.models import WorkflowExecution
+            from asgiref.sync import sync_to_async
+            execution = await sync_to_async(WorkflowExecution.objects.get)(id=existing_workflow_id)
+            tracker.execution = execution
+            workflow_id = existing_workflow_id
+        else:
             workflow_id = await tracker.start_workflow()
+
+                
+        try:
             
             # STEP 1: Prepare dream entries
             step1 = await tracker.start_step(
                 name="Prepare Dream Entries",
                 step_type="data_preparation",
-                input_data={"question": custom_question, "entry_count": len(entries)}
+                input_data={"question": question, "entry_count": len(entries)}
             )
             
             docs = [
@@ -1412,7 +1422,7 @@ class DreamJournalAnalyzer:
             
             Context: {full_context}
             Journal Entries: {{context}}
-            Question: {custom_question}
+            Question: {question}
             Answer:"""
             
             qa_chain = RetrievalQA.from_chain_type(
@@ -1422,7 +1432,7 @@ class DreamJournalAnalyzer:
                 chain_type_kwargs={"prompt": PromptTemplate.from_template(prompt)}
             )
             
-            result = qa_chain.run(custom_question)
+            result = qa_chain.run(question)
             
             await step4.complete(
                 output={"answer_length": len(result)},
@@ -1438,7 +1448,7 @@ class DreamJournalAnalyzer:
             doctor_personality = settings.get('doctorPersonality', '') if settings else ''
             saved_question = await sync_to_async(CustomQuestion.objects.create)(
                 user_id=user_id,
-                question=custom_question,
+                question=question,
                 answer=result,
                 doctor_personality=doctor_personality,
                 workflow_execution_id=workflow_id
