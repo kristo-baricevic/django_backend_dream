@@ -2,11 +2,13 @@ import django_setup
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Dict
 from datetime import datetime
 import os
 from contextlib import asynccontextmanager
 from typing import List, Dict, Any, Optional
+from fastapi import BackgroundTasks
+from core.workflow_tracker import WorkflowTracker
 
 # Import your journal analyzer
 from core.dream_analyzer import (
@@ -184,3 +186,82 @@ if __name__ == "__main__":
         reload=True,
         log_level="info"
     )
+
+@app.post("/qa-with-workflow")
+async def qa_with_workflow(
+    request: QARequest,
+    background_tasks: BackgroundTasks,
+    journal_service: DreamJournalService = Depends(get_service)
+):
+    """Start workflow and return immediately"""
+    
+    # Create workflow ID first
+    tracker = WorkflowTracker(
+        workflow_type="cumulative_analysis",
+        routine_name="Dream Analysis",
+        user_id=request.settings.get('user_id') if request.settings else None
+    )
+    workflow_id = await tracker.start_workflow()
+    
+    print(f"🔵 CREATED NEW WORKFLOW: {workflow_id}")  # ADD THIS
+    
+    # Process in background
+    background_tasks.add_task(
+        process_analysis_workflow,
+        workflow_id,
+        request.entries,
+        request.personality,
+        request.settings,
+        journal_service
+    )
+    
+    response_data = {
+        "workflow_id": workflow_id,
+        "status": "processing"
+    }
+    
+    print(f"🔵 RETURNING TO FRONTEND: {response_data}")  # ADD THIS
+    
+    # Return immediately
+    return response_data
+
+async def process_analysis_workflow(
+    workflow_id: str,
+    entries: List[Dict],
+    personality: str,
+    settings: Dict,
+    journal_service: DreamJournalService
+):
+    """Background task to process the workflow"""
+    try:
+        result, _ = await journal_service.analyzer.qa_analysis_with_workflow(
+            entries, 
+            personality, 
+            settings,
+            existing_workflow_id=workflow_id  # Pass existing workflow_id
+        )
+    except Exception as e:
+        print(f"❌ Background task failed: {e}")
+
+@app.get("/workflows/{workflow_id}")
+async def get_workflow(workflow_id: str):
+    """Get workflow execution details"""
+    from myapp.models import WorkflowExecution
+    from asgiref.sync import sync_to_async
+    
+    try:
+        execution = await sync_to_async(
+            WorkflowExecution.objects.prefetch_related('steps__citations').get
+        )(id=workflow_id)
+        
+        steps = await sync_to_async(list)(execution.steps.all())
+        
+        return {
+            "id": str(execution.id),
+            "workflow_type": execution.workflow_type,
+            "routine_name": execution.routine_name,
+            "status": execution.status,
+            # ... rest of response
+        }
+    except WorkflowExecution.DoesNotExist:
+        raise HTTPException(status_code=404, detail="Workflow not found")

@@ -1,6 +1,6 @@
 import os
 import json
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 from enum import Enum
 
@@ -17,6 +17,8 @@ from langchain.output_parsers import PydanticOutputParser
 import openai
 from asgiref.sync import sync_to_async
 from myapp.models import CumulativeAnalysis, CustomQuestion
+from core.workflow_tracker import WorkflowTracker
+
 
 # Emotion types and colors (equivalent to your emotions parameter)
 class EmotionType(str, Enum):
@@ -1108,6 +1110,344 @@ class DreamJournalAnalyzer:
 
         except Exception as e:
             print(f"Error in refinement stage: {e}")
+            raise
+    
+    async def qa_analysis_with_workflow(
+        self,
+        entries: List[Dict],
+        personality: str = "You are a thoughtful dream analyst...",
+        settings: Dict = None,
+        existing_workflow_id: str = None  # Add this parameter
+    ) -> Tuple[str, str]:
+        """Cumulative analysis with workflow tracking"""
+        user_id = settings.get('user_id') if settings else None  # ← add this line
+
+        # Use existing tracker if workflow_id provided, otherwise create new one
+        if existing_workflow_id:
+            # Reconnect to existing workflow
+            from myapp.models import WorkflowExecution
+            from asgiref.sync import sync_to_async
+            
+            execution = await sync_to_async(WorkflowExecution.objects.get)(id=existing_workflow_id)
+            tracker = WorkflowTracker.__new__(WorkflowTracker)
+            tracker.workflow_type = execution.workflow_type
+            tracker.routine_name = execution.routine_name
+            tracker.user_id = execution.user_id
+            tracker.execution = execution
+            tracker.current_step_number = 0
+            workflow_id = existing_workflow_id
+        else:
+            tracker = WorkflowTracker(
+                workflow_type="cumulative_analysis",
+                routine_name="Dream Analysis",
+                user_id=settings.get('user_id') if settings else None
+            )
+            workflow_id = await tracker.start_workflow()
+
+        
+        try:
+            # # Start workflow tracking
+            # workflow_id = await tracker.start_workflow()
+            
+            # STEP 1: Create vectorstore from entries
+            step1 = await tracker.start_step(
+                name="Build Dream Vector Database",
+                step_type="vectorstore_creation",
+                input_data={"entry_count": len(entries)}
+            )
+            
+            docs = [
+                Document(
+                    page_content=entry.content,
+                    metadata={"source": entry.id, "date": entry.created_at.isoformat()}
+                )
+                for entry in entries
+            ]
+            vectorstore = FAISS.from_documents(docs, self.embeddings)
+            
+            await step1.complete(
+                output={"documents_processed": len(docs)},
+                confidence=1.0,
+                reasoning="Successfully created vector database from dream entries"
+            )
+            
+            # STEP 2: Knowledge base retrieval
+            step2 = await tracker.start_step(
+                name="Search Dream Theory Knowledge Base",
+                step_type="knowledge_retrieval"
+            )
+            
+            knowledge_docs = await self.comprehensive_knowledge_retrieval(entries, k=20)
+            
+            citations = [
+                {
+                    'source': 'dream_science_papers',
+                    'content': doc.page_content[:200],
+                    'confidence': 0.85,
+                    'reference': doc.metadata.get('source', 'Unknown')
+                }
+                for doc in knowledge_docs[:5]  # Top 5 citations
+            ]
+            
+            await step2.complete(
+                output={"documents_found": len(knowledge_docs)},
+                confidence=0.9 if knowledge_docs else 0.3,
+                reasoning=f"Retrieved {len(knowledge_docs)} relevant dream interpretation passages",
+                citations=citations
+            )
+            
+            # STEP 3: Extract theoretical frameworks
+            step3 = await tracker.start_step(
+                name="Extract Theoretical Frameworks",
+                step_type="framework_extraction"
+            )
+            
+            quotes_context = self.assemble_knowledge_context(knowledge_docs, max_tokens=6000)
+            
+            extraction_prompt = f"""You are analyzing dreams using specific dream interpretation theory...
+            {quotes_context}
+            {{context}}
+            Extract the most relevant theoretical frameworks for these dreams:"""
+            
+            extract_chain = RetrievalQA.from_chain_type(
+                llm=self.llm,
+                chain_type="stuff",
+                retriever=vectorstore.as_retriever(search_kwargs={"k": min(6, len(docs))}),
+                chain_type_kwargs={"prompt": PromptTemplate.from_template(extraction_prompt)}
+            )
+            
+            relevant_quotes = extract_chain.run("Extract the most relevant theoretical frameworks for these dreams.")
+            
+            await step3.complete(
+                output={"frameworks_extracted": len(relevant_quotes.split('\n'))},
+                confidence=0.85,
+                reasoning="Extracted key theoretical frameworks from knowledge base",
+                model="gpt-3.5-turbo",
+                tokens=len(relevant_quotes) // 4
+            )
+            
+            # STEP 4: Load user context (astrology, personality)
+            step4 = await tracker.start_step(
+                name="Load User Profile Context",
+                step_type="user_context"
+            )
+            
+            user_context = self.assemble_user_context(settings)
+            
+            astro_citations = []
+            if settings and settings.get('astrology'):
+                astro = settings['astrology']
+                if astro.get('sun'):
+                    astro_citations.append({
+                        'source': 'natal_chart',
+                        'content': f"Sun in {astro['sun']}",
+                        'confidence': 1.0,
+                        'reference': 'User Natal Chart'
+                    })
+            
+            await step4.complete(
+                output={"context_loaded": bool(user_context)},
+                confidence=1.0,
+                reasoning="Loaded astrology and personality context for dreamer",
+                citations=astro_citations
+            )
+            
+            # STEP 5: Synthesize final analysis
+            step5 = await tracker.start_step(
+                name="Synthesize Final Interpretation",
+                step_type="synthesis"
+            )
+            
+            synthesis_prompt = f"""You are an expert dream analyst...
+            RELEVANT THEORETICAL FRAMEWORKS:
+            {relevant_quotes}
+            
+            {user_context if user_context else ''}
+            
+            Dream entries: {{context}}
+            
+            Analysis:"""
+            
+            synthesis_chain = RetrievalQA.from_chain_type(
+                llm=self.llm,
+                chain_type="stuff",
+                retriever=vectorstore.as_retriever(search_kwargs={"k": min(6, len(docs))}),
+                chain_type_kwargs={"prompt": PromptTemplate.from_template(synthesis_prompt)}
+            )
+            
+            result = synthesis_chain.run("Provide the dream analysis using the quoted theory.")
+            
+            await step5.complete(
+                output={"analysis_length": len(result)},
+                confidence=0.87,
+                reasoning="Synthesized comprehensive interpretation from all sources",
+                model="gpt-3.5-turbo",
+                tokens=len(result) // 4
+            )
+            
+            # STEP 6: Validate analysis quality
+            step6 = await tracker.start_step(
+                name="Validate Analysis Quality",
+                step_type="validation"
+            )
+            
+            validation_metrics = self.validate_analysis_quality(result, knowledge_docs)
+            
+            await step6.complete(
+                output=validation_metrics,
+                confidence=validation_metrics['quality_score'] / 10,
+                reasoning=f"Quality score: {validation_metrics['quality_score']}"
+            )
+            
+            # Complete workflow
+            total_citations = len(citations) + len(astro_citations)
+            await tracker.complete_workflow(
+                result=result,
+                confidence=0.87,
+                total_citations=total_citations
+            )
+            
+            # Save to your existing model too
+            user_id = settings.get('user_id') if settings else None
+
+            doctor_personality = settings.get('doctorPersonality', '') if settings else ''
+            cumulative = await sync_to_async(CumulativeAnalysis.objects.create, thread_sensitive=True)(
+                user_id=user_id,
+                analysis=result,
+                doctor_personality=doctor_personality,
+                workflow_execution_id=workflow_id
+            )
+
+            
+            return result, workflow_id
+            
+        except Exception as error:
+            print(f'❌ Error in QA analysis: {error}')
+            await tracker.fail_workflow(str(error))
+            raise
+    
+    async def custom_question_with_workflow(
+        self,
+        custom_question: str,
+        entries: List[JournalEntry],
+        personality: str = None,
+        settings: Dict[str, Any] = None
+    ) -> tuple[str, str]:  # Returns (result, workflow_id)
+        """
+        Enhanced custom question analysis with workflow tracking.
+        """
+        user_id = settings.get('user_id') if settings else None
+        tracker = WorkflowTracker(
+            workflow_type='custom_question',
+            routine_name=f'Custom Q&A: {custom_question[:50]}...',
+            user_id=user_id
+        )
+        
+        try:
+            workflow_id = await tracker.start_workflow()
+            
+            # STEP 1: Prepare dream entries
+            step1 = await tracker.start_step(
+                name="Prepare Dream Entries",
+                step_type="data_preparation",
+                input_data={"question": custom_question, "entry_count": len(entries)}
+            )
+            
+            docs = [
+                Document(
+                    page_content=entry.content,
+                    metadata={"source": entry.id, "date": entry.created_at.isoformat()}
+                )
+                for entry in entries
+            ]
+            vectorstore = FAISS.from_documents(docs, self.embeddings)
+            
+            await step1.complete(
+                output={"entries_processed": len(docs)},
+                confidence=1.0,
+                reasoning="Prepared dream entries for analysis"
+            )
+            
+            # STEP 2: Search knowledge base
+            step2 = await tracker.start_step(
+                name="Search Relevant Dream Theory",
+                step_type="knowledge_search"
+            )
+            
+            dream_theory_docs = await self.enhanced_knowledge_search(entries)
+            
+            await step2.complete(
+                output={"theory_docs_found": len(dream_theory_docs)},
+                confidence=0.8,
+                reasoning="Found relevant dream interpretation theory"
+            )
+            
+            # STEP 3: Assemble context
+            step3 = await tracker.start_step(
+                name="Assemble Full Context",
+                step_type="context_assembly"
+            )
+            
+            full_context = self.assemble_full_context(dream_theory_docs, settings)
+            
+            await step3.complete(
+                output={"context_size": len(full_context)},
+                confidence=1.0,
+                reasoning="Assembled dream theory, astrology, and personality context"
+            )
+            
+            # STEP 4: Generate answer
+            step4 = await tracker.start_step(
+                name="Generate Answer",
+                step_type="answer_generation"
+            )
+            
+            personality_instruction = ""
+            if personality:
+                personality_instruction = f"\n\nResponse Style:\n{personality}\n"
+            
+            prompt = f"""Answer the following question about the dream journal entries.
+            
+            {personality_instruction}
+            
+            Context: {full_context}
+            Journal Entries: {{context}}
+            Question: {custom_question}
+            Answer:"""
+            
+            qa_chain = RetrievalQA.from_chain_type(
+                llm=self.llm,
+                chain_type="stuff",
+                retriever=vectorstore.as_retriever(search_kwargs={"k": 4}),
+                chain_type_kwargs={"prompt": PromptTemplate.from_template(prompt)}
+            )
+            
+            result = qa_chain.run(custom_question)
+            
+            await step4.complete(
+                output={"answer_length": len(result)},
+                confidence=0.85,
+                reasoning="Generated answer using dream theory and entries",
+                model="gpt-3.5-turbo"
+            )
+            
+            # Complete workflow
+            await tracker.complete_workflow(result=result, confidence=0.85)
+            
+            # Save to existing model
+            doctor_personality = settings.get('doctorPersonality', '') if settings else ''
+            saved_question = await sync_to_async(CustomQuestion.objects.create)(
+                user_id=user_id,
+                question=custom_question,
+                answer=result,
+                doctor_personality=doctor_personality,
+                workflow_execution_id=workflow_id
+            )
+            
+            return result, workflow_id
+            
+        except Exception as error:
+            await tracker.fail_workflow(str(error))
             raise
 
 

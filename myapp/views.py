@@ -1,17 +1,18 @@
 import requests
-from django.shortcuts import render
+from django.shortcuts import render, get_object_or_404
+from django.http import JsonResponse
+from django.views.decorators.http import require_http_methods
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.generics import ListAPIView
 from rest_framework.pagination import PageNumberPagination
 from rest_framework import status
-from .models import Analysis, JournalEntry, CumulativeAnalysis, CustomQuestion
+from .models import Analysis, JournalEntry, CumulativeAnalysis, CustomQuestion, WorkflowExecution  # Add WorkflowExecution
 from .serializers import AnalysisSerializer, JournalEntrySerializer, CumulativeAnalysisSerializer, CustomQuestionSerializer
 from rest_framework.permissions import AllowAny
 from django.db.models import Q
 from django.utils.dateparse import parse_date
-
 
 class JournalEntryPagination(PageNumberPagination):
     page_size = 3
@@ -303,3 +304,61 @@ def delete_entry(request, id):
     
     entry.delete()
     return Response({"detail": "Entry deleted successfully."}, status=status.HTTP_204_NO_CONTENT)
+
+@require_http_methods(["GET"])
+def get_workflow_execution(request, workflow_id):
+    """Get workflow execution details"""
+    try:
+        execution = get_object_or_404(
+            WorkflowExecution.objects.prefetch_related('steps__citations'),
+            id=workflow_id
+        )
+        
+        steps_data = []
+        for step in execution.steps.all():
+            citations_data = [
+                {
+                    'id': str(citation.id),
+                    'source': citation.source,
+                    'content': citation.content,
+                    'confidence': citation.confidence,
+                    'reference': citation.reference,
+                }
+                for citation in step.citations.all()
+            ]
+            
+            steps_data.append({
+                'id': str(step.id),
+                'step_number': step.step_number,
+                'name': step.name,
+                'step_type': step.step_type,
+                'status': step.status,
+                'start_time': step.start_time.isoformat() if step.start_time else None,
+                'end_time': step.end_time.isoformat() if step.end_time else None,
+                'duration_ms': step.duration_ms,
+                'confidence': step.confidence,
+                'reasoning': step.reasoning,
+                'model_used': step.model_used,
+                'tokens_used': step.tokens_used,
+                'error': step.error,
+                'citations': citations_data,
+            })
+        
+        data = {
+            'id': str(execution.id),
+            'workflow_type': execution.workflow_type,
+            'routine_name': execution.routine_name,
+            'status': execution.status,
+            'start_time': execution.start_time.isoformat(),
+            'end_time': execution.end_time.isoformat() if execution.end_time else None,
+            'final_result': execution.final_result,
+            'overall_confidence': execution.overall_confidence,
+            'total_citations': execution.total_citations,
+            'error_message': execution.error_message,
+            'steps': steps_data,
+        }
+        
+        return JsonResponse(data)
+        
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
