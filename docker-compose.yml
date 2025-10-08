@@ -24,6 +24,7 @@ services:
       - "8001:8001"
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - DATABASE_URL=postgresql+psycopg2://dreamuser:dreampass@db:5432/dreamdb
     volumes:
       - ./dream-fast-api:/app
       - .:/django_backend_dream
