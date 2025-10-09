@@ -95,6 +95,7 @@ async def analyze_entry(
     journal_service: DreamJournalService = Depends(get_service)
 ):
     """Analyze a single journal entry using doctor personality from settings."""
+    print(f"request ==00== settings {request.settings}")
     try:
         result = await journal_service.analyze_single_entry(
             content=request.content,

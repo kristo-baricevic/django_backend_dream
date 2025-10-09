@@ -117,7 +117,9 @@ class Analysis(models.Model):
     negative = models.BooleanField(default=False)
     subject = models.CharField(max_length=255)
     sentiment_score = models.FloatField(default=0)
-
+    doctor_personality = models.TextField(blank=True, default='')
+    weights = models.JSONField(default=dict)
+    
     class Meta:
         indexes = [models.Index(fields=['user'])]
 

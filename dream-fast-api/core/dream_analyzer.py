@@ -71,7 +71,9 @@ class JournalAnalysis(BaseModel):
     color: str = Field(description="a hexadecimal color code that represents the mood of the entry")
     interpretation: str = Field(description="your final analysis of the dream in about 5 or 6 sentences. Make this a dramatic interpretation. When you are done, suggest a song to listen to and a snack to eat.")
     sentiment_score: int = Field(description="sentiment of the text and rated on a scale from -10 to 10, where -10 is extremely negative, 0 is neutral, and 10 is extremely positive")
-
+    doctor_personality: str = Field(description="the doctor personality used for this analysis")  # ADD THIS
+    weights: Dict[str, float] = Field(description="the final weights used for this analysis")  # ADD THIS
+    
 class JournalEntry(BaseModel):
     id: str
     created_at: datetime
@@ -969,18 +971,27 @@ class DreamJournalAnalyzer:
 
             # === Load doctor profile & compute final weights ===
             doctor_name = settings.get("doctorPersonality", "Academic") if settings else "Academic"
-            doctor_profile = await sync_to_async(DoctorProfile.objects.filter(name__iexact=doctor_name).first)()
-            if not doctor_profile:
-                profile = self.DEFAULT_PROFILE
-            else:
-                profile = doctor_profile
+            print(f"doctor name === {doctor_name}")
+            print(f"settings === {settings}")
 
+            # Try database first, then fallback to vectorstore profile
+            # doctor_profile = await sync_to_async(DoctorProfile.objects.filter(name__iexact=doctor_name).first)()
+            # if doctor_profile:
+            #     profile = doctor_profile
+            # else:
+            profile = await self._get_doctor_profile(doctor_name)
+            profile_weights = profile.weights
+
+            print(f"doctor profile === {profile}")
             user_inf = settings.get("influence", {}) if settings else {}
             doctor_influence = settings.get("doctor_influence", 0.5) if settings else 0.5
+            print(f"user_inf === === {user_inf}")
+            print(f"doctor_influence === === {doctor_influence}")
+            print(f"profile_weights === === {profile_weights}")
 
             final_weights = self._compute_final_weights(
                 user_inf=user_inf,
-                doctor_w=profile.weights,
+                doctor_w=profile_weights,
                 doctor_influence=doctor_influence,
             )
 
@@ -989,6 +1000,9 @@ class DreamJournalAnalyzer:
                 settings=settings,
                 weights=final_weights
             )
+
+            print(f"profile_weights === === {final_weights}")
+
 
             # Doctor’s tone and description
             doctor_intro = f"You are {profile.name}, a dream analyst.\n{profile.description}\n\n"
@@ -1030,7 +1044,9 @@ class DreamJournalAnalyzer:
                 subject=json_data['subject'],
                 color=get_emotion_color(EmotionType(json_data['mood'])),
                 interpretation=json_data['interpretation'],
-                sentiment_score=json_data['sentiment_score']
+                sentiment_score=json_data['sentiment_score'],
+                doctor_personality = doctor_name,
+                weights = final_weights
             )
 
             return parsed_result
@@ -1039,7 +1055,7 @@ class DreamJournalAnalyzer:
             print(f'❌ Failed to analyze entry: {error}')
             raise
 
-
+    
     # async def analyze_entry(self, content: str, personality_type: str = "empathetic") -> JournalAnalysis:
     #     """
     #     Function 3: Analyze journal entry with structured output.
@@ -1651,42 +1667,136 @@ class DreamJournalAnalyzer:
         Robust parser: handles a 'Weights:' block with lines like 'theory: 0.7'.
         Falls back to 0 if missing. Does not require YAML.
         """
-        # Try to isolate the weights block
-        block_match = re.search(r"(?im)^weights:\s*(.+?)(?:^\S|\\Z)", text + "\nX", flags=re.DOTALL)
-        block = block_match.group(1) if block_match else text
-
-        def grab(key):
-            m = re.search(rf"(?im)^\s*{key}\s*:\s*([0-9]*\.?[0-9]+)", block)
-            return float(m.group(1)) if m else 0.0
-
-        w = {
-            "theory": grab("theory"),
-            "astrology": grab("astrology"),
-            "personality": grab("personality"),
-            "medicalHistory": grab("medicalHistory"),
+        weights = {
+            "theory": 0.0,
+            "astrology": 0.0,
+            "personality": 0.0,
+            "medicalHistory": 0.0,
         }
+        
+        # Find the Weights: section
+        if "Weights:" not in text:
+            print(f"block_match === None (no 'Weights:' found)")
+            print(f"w ==www== {weights}")
+            return weights
+        
+        # Split text into lines and find weights section
+        lines = text.split('\n')
+        in_weights_section = False
+        
+        for line in lines:
+            if 'Weights:' in line:
+                in_weights_section = True
+                continue
+                
+            if in_weights_section:
+                # Stop when we hit a non-indented line (end of weights block)
+                if line and not line[0].isspace():
+                    break
+                    
+                # Try to parse each weight key
+                for key in weights.keys():
+                    # Match pattern: "key: 0.6" (with any amount of whitespace)
+                    match = re.search(rf'{key}\s*:\s*([0-9]*\.?[0-9]+)', line, re.IGNORECASE)
+                    if match:
+                        weights[key] = float(match.group(1))
+                        break
+        
+        print(f"block_match === {in_weights_section}")
+        print(f"w ==www== {weights}")
+        return weights
+
         return w
 
     async def _get_doctor_profile(self, name: str) -> DoctorProfile:
-        """
-        Retrieve the best-matching doctor profile from the vector store.
-        """
-        query = f"{name} doctor profile dream interpretation"
-        docs = await self.knowledge_base.search_relevant_knowledge(query, k=1)
-        if not docs:
+        """Load doctor profile directly from file."""
+        file_path = f"knowledge_base/doctor_profiles/{name.lower()}.txt"
+        
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                text = f.read()
+                
+            print(f"✅ Loaded doctor profile from: {file_path}")
+            
+            # Parse weights
+            weights = self._parse_weights_from_text(text)
+            
+            # Parse name
+            nm = re.search(r"(?im)^Name\s*:\s*(.+)$", text, re.MULTILINE)
+            profile_name = nm.group(1).strip() if nm else name
+            
+            # Parse description (everything between "Background:" and "Weights:")
+            desc_match = re.search(r"Background:(.*?)(?=Weights:)", text, re.DOTALL | re.IGNORECASE)
+            description = desc_match.group(1).strip() if desc_match else "Dream analyst profile."
+            
+            return self.DoctorProfile(
+                name=profile_name,
+                description=description,
+                raw_text=text,
+                weights=weights
+            )
+            
+        except FileNotFoundError:
+            print(f"⚠️ Profile file not found: {file_path}")
+            print(f"⚠️ Falling back to DEFAULT_PROFILE")
+            return self.DEFAULT_PROFILE
+        except Exception as e:
+            print(f"❌ Error loading profile: {e}")
             return self.DEFAULT_PROFILE
 
-        doc = docs[0]
-        text = doc.page_content
-        weights = self._parse_weights_from_text(text)
-        nm = re.search(r"(?im)^name\s*:\s*(.+)$", text)
-        desc = re.search(r"(?im)^(background|personality style|prompt style)\s*:\s*(.+)$", text, re.DOTALL)
-        return self.DoctorProfile(
-            name=(nm.group(1).strip() if nm else name),
-            description=(desc.group(2).strip() if desc else ""),
-            raw_text=text,
-            weights=weights
-        )
+    async def _build_weighted_context(self, dream: str, weights: Dict[str, float], doctor_profile: DoctorProfile) -> str:
+        """Build context that actually uses the weights to prioritize sources."""
+        
+        sections = []
+        
+        # Add doctor voice FIRST
+        if doctor_profile.description:
+            sections.append(f"=== YOUR VOICE & APPROACH ===\n{doctor_profile.description}\n")
+        
+        # Fetch and weight each category
+        categories = [
+            ("theory", "Dream Theory & Symbolism", "dream symbolism theory interpretation"),
+            ("astrology", "Astrological Context", "astrology zodiac signs planets"),
+            ("personality", "Personality Psychology", "personality traits psychology behavior"),
+            ("medicalHistory", "Medical Context", "medical psychological mental health")
+        ]
+        
+        for key, label, search_term in categories:
+            weight = weights.get(key, 0.0)
+            if weight > 0.05:  # Only include if weight is meaningful
+                k = max(1, int(weight * 5))
+                
+                # Use your EXISTING search method
+                query = f"{search_term} {dream[:100]}"
+                docs = await self.knowledge_base.search_relevant_knowledge(query, k=k)
+                
+                if docs:
+                    clean_content = self._extract_relevant_snippets(docs, dream, max_chars=500)
+                    sections.append(f"=== {label.upper()} (weight: {weight:.0%}) ===\n{clean_content}\n")
+        
+        return "\n".join(sections)
+        
+    def _extract_relevant_snippets(self, docs, dream: str, max_chars: int = 500) -> str:
+        """Extract only the most relevant parts, not entire docs."""
+        snippets = []
+        
+        for doc in docs:
+            text = doc.page_content.strip()
+            # Remove obvious noise
+            if any(x in text.lower() for x in ['recipe', 'cook', 'ingredients', 'oven']):
+                continue
+            
+            # Take first coherent paragraph or sentence that seems relevant
+            sentences = text.split('.')
+            for sentence in sentences[:3]:  # First 3 sentences only
+                if len(sentence.strip()) > 20:
+                    snippets.append(sentence.strip() + '.')
+                    break
+            
+            if sum(len(s) for s in snippets) > max_chars:
+                break
+        
+        return ' '.join(snippets)
 
 
 # Example usage and helper functions

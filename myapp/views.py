@@ -210,7 +210,6 @@ def create_entry(request):
         return Response(serializer.data, status=status.HTTP_201_CREATED)
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-# views.py
 @api_view(['PUT', 'PATCH'])
 @permission_classes([AllowAny])
 def update_entry(request, id):
@@ -238,14 +237,14 @@ def update_entry(request, id):
             Analysis.objects.get(entry=updated_entry)
         except Analysis.DoesNotExist:
             try:
-                # pull doctor personality ONLY from settings layer
-                doctor_personality = request.data.get('doctorPersonality', 'Academic')
-                influence = request.data.get('influence', {
+                settings = request.data.get('settings', {})
+                doctor_personality = settings.get('doctorPersonality', 'Academic')
+                influence = settings.get('influence', {
                     'astrology': 0.15,
                     'personality': 0.15,
                     'medicalHistory': 0.10
                 })
-                doctor_influence = request.data.get('doctor_influence', 0.5)
+                doctor_influence = influence.get('doctor', 0.5)
 
                 fastapi_response = requests.post(
                     'http://104.236.96.193:8001/analyze',
@@ -263,23 +262,35 @@ def update_entry(request, id):
                 
                 if fastapi_response.status_code == 200:
                     analysis_data = fastapi_response.json()
-                    new_analysis = Analysis.objects.create(
-                        entry=updated_entry,
-                        user=updated_entry.user if updated_entry.user else None,
-                        mood=analysis_data['mood'],
-                        summary=analysis_data['summary'],
-                        color=analysis_data['color'],
-                        interpretation=analysis_data['interpretation'],
-                        negative=analysis_data['negative'],
-                        subject=analysis_data['subject'],
-                        sentiment_score=analysis_data['sentiment_score']
-                    )
-                    updated_entry.analysis = new_analysis
-                    updated_entry.save()
-                    updated_serializer = JournalEntrySerializer(updated_entry)
-                    return Response(updated_serializer.data)
+                    print(f"📦 FastAPI response: {analysis_data}")
+                    
+                    try:
+                        new_analysis = Analysis.objects.create(
+                            entry=updated_entry,
+                            user=updated_entry.user if updated_entry.user else None,
+                            mood=analysis_data['mood'],
+                            summary=analysis_data['summary'],
+                            color=analysis_data['color'],
+                            interpretation=analysis_data['interpretation'],
+                            negative=analysis_data['negative'],
+                            subject=analysis_data['subject'],
+                            sentiment_score=analysis_data['sentiment_score'],
+                            doctor_personality=analysis_data['doctor_personality'],
+                            weights=analysis_data['weights']
+                        )
+                        print(f"✅ Created analysis: {new_analysis.id}")
+                        updated_entry.analysis = new_analysis
+                        updated_entry.save()
+                        updated_serializer = JournalEntrySerializer(updated_entry)
+                        return Response(updated_serializer.data)
+                    except KeyError as e:
+                        print(f"❌ Missing key in response: {e}")
+                        print(f"Available keys: {analysis_data.keys()}")
+                    except Exception as e:
+                        print(f"❌ Error creating Analysis: {e}")
                 else:
-                    print(f"FastAPI analysis failed: {fastapi_response.text}")
+                    print(f"FastAPI analysis failed: {fastapi_response.status_code} - {fastapi_response.text}")
+                    
             except requests.RequestException as e:
                 print(f"Failed to connect to FastAPI service: {e}")
             except Exception as e:
