@@ -16,9 +16,10 @@ from langchain.prompts import PromptTemplate
 from langchain.output_parsers import PydanticOutputParser
 import openai
 from asgiref.sync import sync_to_async
-from myapp.models import CumulativeAnalysis, CustomQuestion
+from myapp.models import CumulativeAnalysis, CustomQuestion, DoctorProfile
 from core.workflow_tracker import WorkflowTracker
-
+import re
+from dataclasses import dataclass
 
 # Emotion types and colors (equivalent to your emotions parameter)
 class EmotionType(str, Enum):
@@ -275,7 +276,7 @@ class DreamJournalAnalyzer:
         
         # Initialize knowledge base
         self.knowledge_base = DreamKnowledgeBase(
-            files_directory="knowledge_base/files",
+            files_directory="knowledge_base",
             vector_directory="knowledge_base/vectors",
             embeddings=self.embeddings
         )
@@ -283,7 +284,21 @@ class DreamJournalAnalyzer:
         self.astrology_kb = AstrologyKnowledgeBase()
         self.personality_kb = PersonalityKnowledgeBase()
 
-        
+    @dataclass
+    class DoctorProfile:
+        name: str
+        description: str
+        raw_text: str
+        weights: Dict[str, float]
+
+    DEFAULT_PROFILE = DoctorProfile(
+        name="Academic",
+        description="Fallback academic profile.",
+        raw_text="",
+        weights={"theory": 0.7, "astrology": 0.15, "personality": 0.15, "medicalHistory": 0.0},
+    )
+    
+    
     async def initialize_knowledge_base(self):
         """Call this during service startup."""
         await self.knowledge_base.initialize()
@@ -381,57 +396,115 @@ class DreamJournalAnalyzer:
         
         return unique_docs
 
-    def assemble_full_context( self, dream_theory_docs: List[Document], settings: Dict[str, Any] = None) -> str:
-        """
-        Assemble full context with proper weighting:
-        - Dream theory: 70%
-        - Astrology: 15%
-        - Personality: 15%
-        """
-        print(f"\n=== ASSEMBLING FULL CONTEXT ===")
-        
-        # 70% - Dream theory context
+    def _take_fraction(self, text: str, frac: float) -> str:
+        if frac <= 0: return ""
+        frac = min(max(frac, 0.0), 1.0)
+        n = max(0, int(len(text) * frac))
+        return text[:n]
+
+    def _build_medical_context(self, settings: Dict[str, Any]) -> str:
+        if not settings or not settings.get("medicalHistory"):
+            return ""
+        med = settings["medicalHistory"]
+        parts = []
+        if med.get("psychological"):
+            parts.append("Psychological history: " + ", ".join(med["psychological"]))
+        if med.get("physical"):
+            parts.append("Physical health: " + ", ".join(med["physical"]))
+        return ("=== MEDICAL HISTORY ===\n" + "\n".join(parts)) if parts else ""
+
+    def _blend(self, a: float, b: float, t: float) -> float:
+        return a + t * (b - a)
+
+    def _normalize_weights(self, weights: Dict[str, float]) -> Dict[str, float]:
+        s = sum(max(0.0, v) for v in weights.values())
+        if s <= 0:
+            # defensively default to theory
+            return {"theory": 1.0, "astrology": 0.0, "personality": 0.0, "medicalHistory": 0.0}
+        return {k: max(0.0, v) / s for k, v in weights.items()}
+
+    def _compute_final_weights(self,
+                            user_inf: Dict[str, float],
+                            doctor_w: Dict[str, float],
+                            doctor_influence: float) -> Dict[str, float]:
+        # Neutral baseline (your previous documented split, no medical):
+        base = {"theory": 0.70, "astrology": 0.15, "personality": 0.15, "medicalHistory": 0.0}
+
+        blended = {k: self._blend(base[k], doctor_w.get(k, 0.0), doctor_influence) for k in base.keys()}
+
+        # Apply user sliders as multiplicative factors
+        raw = {
+            "theory": blended["theory"] * max(0.0, 1.0),  # theory has no direct user slider; keep 1.0 or add if you want
+            "astrology": blended["astrology"] * max(0.0, user_inf.get("astrology", 0.15)),
+            "personality": blended["personality"] * max(0.0, user_inf.get("personality", 0.15)),
+            "medicalHistory": blended["medicalHistory"] * max(0.0, user_inf.get("medicalHistory", 0.10)),
+        }
+
+        return self._normalize_weights(raw)
+
+
+    async def assemble_full_context(self, dream_theory_docs: List[Document], settings: Dict[str, Any] = None, weights: Optional[Dict[str, float]] = None) -> str:
+        print("\n=== ASSEMBLING FULL CONTEXT (RAG Doctor + Weights) ===")
+
+        settings = settings or {}
+        doctor_name = settings.get("doctorPersonality", "Academic")
+        user_inf = settings.get("influence", {})
+        doctor_influence = float(user_inf.get("doctor", 0.7))  # 0..1
+
+        # 1) RAG: fetch doctor profile (rich text + weights)
+        profile = await self._get_doctor_profile(doctor_name)
+        final_w = self._compute_final_weights(user_inf, profile.weights, doctor_influence)
+
+        print(f"🩺 Doctor: {profile.name} | weights(raw)={profile.weights} | user={user_inf} | doctorInfluence={doctor_influence}")
+        print(f"🎚 Final normalized weights => {final_w}")
+
+        # 2) DREAM THEORY (weighted by final_w['theory'])
         dream_context = ""
         if dream_theory_docs:
-            dream_context = "\n\n=== DREAM INTERPRETATION THEORY (Primary Reference) ===\n"
+            dream_context = "\n\n=== DREAM INTERPRETATION THEORY (Primary) ===\n"
             for i, doc in enumerate(dream_theory_docs, 1):
-                snippet = doc.page_content[:400] + "..." if len(doc.page_content) > 400 else doc.page_content
-                snippet = snippet.replace("{", "{{").replace("}", "}}")
+                snippet = doc.page_content.replace("{", "{{").replace("}", "}}")
+                snippet = self._take_fraction(snippet, final_w["theory"])
+                if not snippet: break
                 dream_context += f"\n[Reference {i}]\n{snippet}\n"
-            print(f"✅ Dream theory context: {len(dream_context)} chars")
-        
-        # 15% - Astrology context
+
+        # 3) ASTROLOGY (weighted)
         astrology_context = ""
-        if settings and settings.get('astrology'):
-            astro = settings['astrology']
+        if settings.get("astrology"):
+            astro = settings["astrology"]
             astro_text = self.astrology_kb.get_full_chart_context(
-                sun=astro.get('sun'),
-                moon=astro.get('moon'),
-                rising=astro.get('rising')
+                sun=astro.get("sun"), moon=astro.get("moon"), rising=astro.get("rising")
             )
             if astro_text:
-                astrology_context = f"\n\n=== ASTROLOGICAL PROFILE (Secondary Context) ===\n{astro_text}\n"
-                print(f"✅ Astrology context: {len(astrology_context)} chars")
-        
-        # 15% - Personality context
+                astro_text = self._take_fraction(astro_text, final_w["astrology"])
+                if astro_text:
+                    astrology_context = f"\n\n=== ASTROLOGICAL PROFILE === (w={final_w['astrology']:.2f})\n{astro_text}\n"
+
+        # 4) PERSONALITY (MBTI) (weighted)
         personality_context = ""
-        if settings and settings.get('personality'):
-            personality_text = self.personality_kb.get_personality_context(
-                settings['personality']
-            )
-            if personality_text:
-                personality_context = f"\n\n=== PERSONALITY PROFILE (Secondary Context) ===\n{personality_text}\n"
-                print(f"✅ Personality context: {len(personality_context)} chars")
-        
-        full_context = dream_context + astrology_context + personality_context
-        
-        print(f"📊 Total context assembled: {len(full_context)} characters")
-        print(f"   - Dream theory: ~{len(dream_context)} chars (~70%)")
-        print(f"   - Astrology: ~{len(astrology_context)} chars (~15%)")
-        print(f"   - Personality: ~{len(personality_context)} chars (~15%)")
-        print(f"=== END CONTEXT ASSEMBLY ===\n")
-        
-        return full_context
+        if settings.get("personality"):
+            ptxt = self.personality_kb.get_personality_context(settings["personality"])
+            if ptxt:
+                ptxt = self._take_fraction(ptxt, final_w["personality"])
+                if ptxt:
+                    personality_context = f"\n\n=== PERSONALITY PROFILE === (w={final_w['personality']:.2f})\n{ptxt}\n"
+
+        # 5) MEDICAL HISTORY (weighted)
+        medical_context = self._build_medical_context(settings)
+        if medical_context:
+            medical_context = self._take_fraction(medical_context, final_w["medicalHistory"])
+
+        # 6) DOCTOR VOICE (full, un-truncated guidance at the end)
+        doctor_voice = f"\n\n=== DOCTOR VOICE ===\n{profile.raw_text}\n"
+
+        full = dream_context + astrology_context + personality_context + (("\n\n" + medical_context) if medical_context else "") + doctor_voice
+
+        print(f"📊 Assembled context lengths — "
+            f"dream:{len(dream_context)} astro:{len(astrology_context)} "
+            f"pers:{len(personality_context)} med:{len(medical_context)} "
+            f"voice:{len(doctor_voice)} total:{len(full)}")
+        print("=== END CONTEXT ASSEMBLY ===\n")
+        return full
 
     async def comprehensive_knowledge_retrieval(self, entries: List[JournalEntry], k: int = 20) -> List[Document]:
         """
@@ -798,7 +871,6 @@ class DreamJournalAnalyzer:
         self, 
         custom_question: str, 
         entries: List[JournalEntry], 
-        personality: str = None, 
         settings: Dict[str, Any] = None
     ) -> str:
         """Handle custom questions with RAG architecture"""
@@ -806,7 +878,6 @@ class DreamJournalAnalyzer:
             print(f"\n=== CUSTOM QUESTION ANALYSIS ===")
             print(custom_question)
 
-            
             docs = [
                 Document(
                     page_content=entry.content,
@@ -817,13 +888,29 @@ class DreamJournalAnalyzer:
             
             vectorstore = FAISS.from_documents(docs, self.embeddings)
             
+            # === LOAD DOCTOR PROFILE & COMPUTE FINAL WEIGHTS ===
+            doctor_name = settings.get("doctorPersonality", "Academic") if settings else "Academic"
+            doctor_profile = await sync_to_async(DoctorProfile.objects.filter(name__iexact=doctor_name).first)()
+            profile = doctor_profile or DEFAULT_PROFILE
+
+            user_inf = settings.get("influence", {}) if settings else {}
+            doctor_influence = settings.get("doctor_influence", 0.5) if settings else 0.5
+
+            final_weights = self._compute_final_weights(
+                user_inf=user_inf,
+                doctor_w=profile.weights,
+                doctor_influence=doctor_influence,
+            )
+
+            print(f"🔮 Final blended weights for {doctor_name}: {final_weights}")
+
             # Get full context
             dream_theory_docs = await self.enhanced_knowledge_search(entries)
-            full_context = self.assemble_full_context(dream_theory_docs, settings)
+            full_context = await self.assemble_full_context(dream_theory_docs, settings, weights=final_weights)
 
             personality_instruction = ""
-            if personality:
-                personality_instruction = f"\n\nResponse Style:\n{personality}\n"
+            if settings and settings.get("doctorPersonality"):
+                personality_instruction = f"\n\nResponse Style:\n{settings['doctorPersonality']}\n"
 
             prompt = f"""
             Answer the following question about the dream journal entries.
@@ -858,7 +945,6 @@ class DreamJournalAnalyzer:
                 question=custom_question,
                 answer=result,
                 doctor_personality=doctor_personality,
-
             )
             print(f"💾 Saved cumulative analysis: {saved_question.id}")
 
@@ -867,26 +953,57 @@ class DreamJournalAnalyzer:
         except Exception as error:
             print(f'Error in custom question: {error}')
             raise
+            
+    async def analyze_entry(
+        self,
+        content: str,
+        personality_type: str = "Academic",
+        settings: Dict[str, Any] = None
+    ) -> JournalAnalysis:
+        """Analyze single entry with doctor personality weighting and RAG architecture"""
+        from myapp.models import DoctorProfile
+        from asgiref.sync import sync_to_async
 
-    async def analyze_entry(self, content: str, personality_type: str = "empathetic", settings: Dict[str, Any] = None) -> JournalAnalysis:
-        """Analyze single entry with RAG architecture"""
         try:
             fake_entry = JournalEntry(id="temp", created_at=datetime.now(), content=content)
             dream_theory_docs = await self.enhanced_knowledge_search([fake_entry])
-            
-            full_context = self.assemble_full_context(dream_theory_docs, settings)
-            
-            personality = get_personality(personality_type)
-            
+
+            # === Load doctor profile & compute final weights ===
+            doctor_name = personality_type or settings.get("doctorPersonality", "Academic") if settings else "Academic"
+            doctor_profile = await sync_to_async(DoctorProfile.objects.filter(name__iexact=doctor_name).first)()
+            if not doctor_profile:
+                profile = self.DEFAULT_PROFILE
+            else:
+                profile = doctor_profile
+
+            user_inf = settings.get("influence", {}) if settings else {}
+            doctor_influence = settings.get("doctor_influence", 0.5) if settings else 0.5
+
+            final_weights = self._compute_final_weights(
+                user_inf=user_inf,
+                doctor_w=profile.weights,
+                doctor_influence=doctor_influence,
+            )
+
+            full_context = await self.assemble_full_context(
+                dream_theory_docs=dream_theory_docs,
+                settings=settings,
+                weights=final_weights
+            )
+
+            # Doctor’s tone and description
+            doctor_intro = f"You are {profile.name}, a dream analyst.\n{profile.description}\n\n"
+
             prompt = f"""
-            {personality}
+            {doctor_intro}
             
-            Analyze this dream journal entry using the reference material below.
-            
+            Analyze this dream journal entry using the weighted reference material below.
+
+            WEIGHTED CONTEXT (based on doctor & user influence):
             {full_context}
-            
+
             Choose the PRIMARY emotion from: joy, sadness, anger, fear, surprise, disgust, anxiety, contentment, excitement, melancholy
-            
+
             Return ONLY valid JSON:
             {{
                 "mood": "one of the emotions above",
@@ -897,17 +1014,16 @@ class DreamJournalAnalyzer:
                 "interpretation": "5-6 sentence analysis with song and snack suggestions",
                 "sentiment_score": -10 to 10
             }}
-            
+
             Dream: {content}
-            
+
             JSON only:
             """
-            
+
             model = ChatOpenAI(temperature=0.3, model_name='gpt-3.5-turbo')
             result = model.invoke(prompt)
-            
             json_data = json.loads(result.content)
-            
+
             parsed_result = JournalAnalysis(
                 mood=EmotionType(json_data['mood']),
                 summary=json_data['summary'],
@@ -917,12 +1033,13 @@ class DreamJournalAnalyzer:
                 interpretation=json_data['interpretation'],
                 sentiment_score=json_data['sentiment_score']
             )
-            
+
             return parsed_result
-            
+
         except Exception as error:
-            print(f'Failed to analyze: {error}')
+            print(f'❌ Failed to analyze entry: {error}')
             raise
+
 
     # async def analyze_entry(self, content: str, personality_type: str = "empathetic") -> JournalAnalysis:
     #     """
@@ -1115,19 +1232,17 @@ class DreamJournalAnalyzer:
     async def qa_analysis_with_workflow(
         self,
         entries: List[Dict],
-        personality: str = "You are a thoughtful dream analyst...",
         settings: Dict = None,
-        existing_workflow_id: str = None  # Add this parameter
+        existing_workflow_id: str = None
     ) -> Tuple[str, str]:
         """Cumulative analysis with workflow tracking"""
-        user_id = settings.get('user_id') if settings else None  # ← add this line
+        from myapp.models import DoctorProfile, CumulativeAnalysis, WorkflowExecution
+        from asgiref.sync import sync_to_async
 
-        # Use existing tracker if workflow_id provided, otherwise create new one
+        user_id = settings.get('user_id') if settings else None
+
+        # Workflow setup
         if existing_workflow_id:
-            # Reconnect to existing workflow
-            from myapp.models import WorkflowExecution
-            from asgiref.sync import sync_to_async
-            
             execution = await sync_to_async(WorkflowExecution.objects.get)(id=existing_workflow_id)
             tracker = WorkflowTracker.__new__(WorkflowTracker)
             tracker.workflow_type = execution.workflow_type
@@ -1144,18 +1259,51 @@ class DreamJournalAnalyzer:
             )
             workflow_id = await tracker.start_workflow()
 
-        
+        # === LOAD DOCTOR PROFILE & COMPUTE FINAL WEIGHTS ===
+        profile = None
         try:
-            # # Start workflow tracking
-            # workflow_id = await tracker.start_workflow()
-            
+            # Only import if you actually created this model. If not, keep the except.
+            from myapp.models import DoctorProfile as DoctorProfileModel  # JSONField 'weights' expected
+            doctor_name = (settings or {}).get("doctorPersonality", "Academic")
+            doctor_profile = await sync_to_async(
+                DoctorProfileModel.objects.filter(name__iexact=doctor_name).first
+            )()
+            if doctor_profile:
+                # Ensure it has the shape we need
+                profile = type("TmpProfile", (), {})()
+                profile.name = doctor_profile.name or "Doctor"
+                profile.description = doctor_profile.description or ""
+                profile.raw_text = getattr(doctor_profile, "raw_text", "") or ""
+                profile.weights = doctor_profile.weights or {
+                    "theory": 0.7, "astrology": 0.15, "personality": 0.15, "medicalHistory": 0.0
+                }
+        except Exception:
+            pass
+
+        if profile is None:
+            # MUST exist in THIS module to avoid NameError
+            profile = self.DEFAULT_PROFILE
+
+        user_inf = (settings or {}).get("influence", {})
+        doctor_influence = float((settings or {}).get("doctor_influence", 0.5))
+
+        final_weights = self._compute_final_weights(
+            user_inf=user_inf,
+            doctor_w=profile.weights,
+            doctor_influence=doctor_influence,
+        )
+
+
+        print(f"🔮 Final blended weights for {doctor_name}: {final_weights}")
+
+        try:
             # STEP 1: Create vectorstore from entries
             step1 = await tracker.start_step(
                 name="Build Dream Vector Database",
                 step_type="vectorstore_creation",
                 input_data={"entry_count": len(entries)}
             )
-            
+
             docs = [
                 Document(
                     page_content=entry.content,
@@ -1164,21 +1312,21 @@ class DreamJournalAnalyzer:
                 for entry in entries
             ]
             vectorstore = FAISS.from_documents(docs, self.embeddings)
-            
+
             await step1.complete(
                 output={"documents_processed": len(docs)},
                 confidence=1.0,
                 reasoning="Successfully created vector database from dream entries"
             )
-            
+
             # STEP 2: Knowledge base retrieval
             step2 = await tracker.start_step(
                 name="Search Dream Theory Knowledge Base",
                 step_type="knowledge_retrieval"
             )
-            
+
             knowledge_docs = await self.comprehensive_knowledge_retrieval(entries, k=20)
-            
+
             citations = [
                 {
                     'source': 'dream_science_papers',
@@ -1186,38 +1334,38 @@ class DreamJournalAnalyzer:
                     'confidence': 0.85,
                     'reference': doc.metadata.get('source', 'Unknown')
                 }
-                for doc in knowledge_docs[:5]  # Top 5 citations
+                for doc in knowledge_docs[:5]
             ]
-            
+
             await step2.complete(
                 output={"documents_found": len(knowledge_docs)},
                 confidence=0.9 if knowledge_docs else 0.3,
                 reasoning=f"Retrieved {len(knowledge_docs)} relevant dream interpretation passages",
                 citations=citations
             )
-            
+
             # STEP 3: Extract theoretical frameworks
             step3 = await tracker.start_step(
                 name="Extract Theoretical Frameworks",
                 step_type="framework_extraction"
             )
-            
+
             quotes_context = self.assemble_knowledge_context(knowledge_docs, max_tokens=6000)
-            
+
             extraction_prompt = f"""You are analyzing dreams using specific dream interpretation theory...
             {quotes_context}
             {{context}}
             Extract the most relevant theoretical frameworks for these dreams:"""
-            
+
             extract_chain = RetrievalQA.from_chain_type(
                 llm=self.llm,
                 chain_type="stuff",
                 retriever=vectorstore.as_retriever(search_kwargs={"k": min(6, len(docs))}),
                 chain_type_kwargs={"prompt": PromptTemplate.from_template(extraction_prompt)}
             )
-            
+
             relevant_quotes = extract_chain.run("Extract the most relevant theoretical frameworks for these dreams.")
-            
+
             await step3.complete(
                 output={"frameworks_extracted": len(relevant_quotes.split('\n'))},
                 confidence=0.85,
@@ -1225,15 +1373,15 @@ class DreamJournalAnalyzer:
                 model="gpt-3.5-turbo",
                 tokens=len(relevant_quotes) // 4
             )
-            
-            # STEP 4: Load user context (astrology, personality)
+
+            # STEP 4: Load user context
             step4 = await tracker.start_step(
                 name="Load User Profile Context",
                 step_type="user_context"
             )
-            
+
             user_context = self.assemble_user_context(settings)
-            
+
             astro_citations = []
             if settings and settings.get('astrology'):
                 astro = settings['astrology']
@@ -1244,39 +1392,50 @@ class DreamJournalAnalyzer:
                         'confidence': 1.0,
                         'reference': 'User Natal Chart'
                     })
-            
+
             await step4.complete(
                 output={"context_loaded": bool(user_context)},
                 confidence=1.0,
                 reasoning="Loaded astrology and personality context for dreamer",
                 citations=astro_citations
             )
-            
-            # STEP 5: Synthesize final analysis
+
+            # STEP 5: Synthesize final analysis (using weighted context)
             step5 = await tracker.start_step(
                 name="Synthesize Final Interpretation",
                 step_type="synthesis"
             )
-            
-            synthesis_prompt = f"""You are an expert dream analyst...
+
+            full_context = await self.assemble_full_context(
+                dream_theory_docs=knowledge_docs,
+                settings=settings,
+                weights=final_weights,
+            )
+
+            synthesis_prompt = f"""You are {profile.name}, a dream analyst.
+            {profile.description}
+
+            WEIGHTED CONTEXT (based on doctor & user influence):
+            {full_context}
+
             RELEVANT THEORETICAL FRAMEWORKS:
             {relevant_quotes}
-            
+
             {user_context if user_context else ''}
-            
+
             Dream entries: {{context}}
-            
+
             Analysis:"""
-            
+
             synthesis_chain = RetrievalQA.from_chain_type(
                 llm=self.llm,
                 chain_type="stuff",
                 retriever=vectorstore.as_retriever(search_kwargs={"k": min(6, len(docs))}),
                 chain_type_kwargs={"prompt": PromptTemplate.from_template(synthesis_prompt)}
             )
-            
-            result = synthesis_chain.run("Provide the dream analysis using the quoted theory.")
-            
+
+            result = synthesis_chain.run("Provide the dream analysis using the weighted theoretical context.")
+
             await step5.complete(
                 output={"analysis_length": len(result)},
                 confidence=0.87,
@@ -1284,21 +1443,21 @@ class DreamJournalAnalyzer:
                 model="gpt-3.5-turbo",
                 tokens=len(result) // 4
             )
-            
-            # STEP 6: Validate analysis quality
+
+            # STEP 6: Validate analysis
             step6 = await tracker.start_step(
                 name="Validate Analysis Quality",
                 step_type="validation"
             )
-            
+
             validation_metrics = self.validate_analysis_quality(result, knowledge_docs)
-            
+
             await step6.complete(
                 output=validation_metrics,
                 confidence=validation_metrics['quality_score'] / 10,
                 reasoning=f"Quality score: {validation_metrics['quality_score']}"
             )
-            
+
             # Complete workflow
             total_citations = len(citations) + len(astro_citations)
             await tracker.complete_workflow(
@@ -1306,37 +1465,35 @@ class DreamJournalAnalyzer:
                 confidence=0.87,
                 total_citations=total_citations
             )
-            
-            # Save to your existing model too
-            user_id = settings.get('user_id') if settings else None
 
+            # Save cumulative analysis
             doctor_personality = settings.get('doctorPersonality', '') if settings else ''
             cumulative = await sync_to_async(CumulativeAnalysis.objects.create, thread_sensitive=True)(
                 user_id=user_id,
                 analysis=result,
                 doctor_personality=doctor_personality,
+                weights=final_weights,
                 workflow_execution_id=workflow_id
             )
 
-            
             return result, workflow_id
-            
+
         except Exception as error:
             print(f'❌ Error in QA analysis: {error}')
             await tracker.fail_workflow(str(error))
             raise
-    
+
     async def custom_question_with_workflow(
         self,
         question: str,
         entries: List[JournalEntry],
-        personality: str = None,
         settings: Dict[str, Any] = None,
         existing_workflow_id: str = None
-    ) -> tuple[str, str]:  # Returns (result, workflow_id)
-        """
-        Enhanced custom question analysis with workflow tracking.
-        """
+    ) -> tuple[str, str]:
+        """Enhanced custom question analysis with doctor weighting and workflow tracking."""
+        from myapp.models import DoctorProfile, CustomQuestion, WorkflowExecution
+        from asgiref.sync import sync_to_async
+
         user_id = settings.get('user_id') if settings else None
         tracker = WorkflowTracker(
             workflow_type='custom_question',
@@ -1345,24 +1502,42 @@ class DreamJournalAnalyzer:
         )
 
         if existing_workflow_id:
-            from myapp.models import WorkflowExecution
-            from asgiref.sync import sync_to_async
             execution = await sync_to_async(WorkflowExecution.objects.get)(id=existing_workflow_id)
             tracker.execution = execution
             workflow_id = existing_workflow_id
         else:
             workflow_id = await tracker.start_workflow()
 
-                
+        # === LOAD DOCTOR PROFILE & COMPUTE FINAL WEIGHTS ===
+        doctor_name = settings.get("doctorPersonality", "Academic") if settings else "Academic"
+
+        # Try database first, then fallback to vectorstore profile
+        doctor_profile = await sync_to_async(DoctorProfile.objects.filter(name__iexact=doctor_name).first)()
+        if doctor_profile:
+            profile = doctor_profile
+        else:
+            profile = await self._get_doctor_profile(doctor_name)
+
+        user_inf = settings.get("influence", {}) if settings else {}
+        doctor_influence = float(settings.get("doctor_influence", 0.5)) if settings else 0.5
+
+        final_weights = self._compute_final_weights(
+            user_inf=user_inf,
+            doctor_w=profile.weights,
+            doctor_influence=doctor_influence,
+        )
+        print(f"🔮 Final user_inf weights: {user_inf}")
+
+        print(f"🔮 Final blended weights for {doctor_name}: {final_weights}")
+
         try:
-            
             # STEP 1: Prepare dream entries
             step1 = await tracker.start_step(
                 name="Prepare Dream Entries",
                 step_type="data_preparation",
                 input_data={"question": question, "entry_count": len(entries)}
             )
-            
+
             docs = [
                 Document(
                     page_content=entry.content,
@@ -1371,94 +1546,148 @@ class DreamJournalAnalyzer:
                 for entry in entries
             ]
             vectorstore = FAISS.from_documents(docs, self.embeddings)
-            
+
             await step1.complete(
                 output={"entries_processed": len(docs)},
                 confidence=1.0,
                 reasoning="Prepared dream entries for analysis"
             )
-            
+
             # STEP 2: Search knowledge base
             step2 = await tracker.start_step(
                 name="Search Relevant Dream Theory",
                 step_type="knowledge_search"
             )
-            
+
             dream_theory_docs = await self.enhanced_knowledge_search(entries)
-            
+
             await step2.complete(
                 output={"theory_docs_found": len(dream_theory_docs)},
                 confidence=0.8,
                 reasoning="Found relevant dream interpretation theory"
             )
-            
-            # STEP 3: Assemble context
+
+            # STEP 3: Assemble weighted context
             step3 = await tracker.start_step(
-                name="Assemble Full Context",
+                name="Assemble Full Context (Weighted)",
                 step_type="context_assembly"
             )
-            
-            full_context = self.assemble_full_context(dream_theory_docs, settings)
-            
+
+            full_context = await self.assemble_full_context(
+                dream_theory_docs=dream_theory_docs,
+                settings=settings,
+                weights=final_weights
+            )
+
             await step3.complete(
                 output={"context_size": len(full_context)},
                 confidence=1.0,
-                reasoning="Assembled dream theory, astrology, and personality context"
+                reasoning="Assembled weighted context using doctor and user influence"
             )
-            
+
             # STEP 4: Generate answer
             step4 = await tracker.start_step(
                 name="Generate Answer",
                 step_type="answer_generation"
             )
-            
+
             personality_instruction = ""
-            if personality:
-                personality_instruction = f"\n\nResponse Style:\n{personality}\n"
-            
-            prompt = f"""Answer the following question about the dream journal entries.
-            
+            if settings and settings.get("doctorPersonality"):
+                personality_instruction = f"\n\nResponse Style:\n{settings['doctorPersonality']}\n"
+
+
+            prompt = f"""You are {profile.name}, a dream analyst.
+            {profile.description}
+
+            WEIGHTED CONTEXT (based on doctor & user influence):
+            {full_context}
+
             {personality_instruction}
-            
-            Context: {full_context}
+
             Journal Entries: {{context}}
             Question: {question}
             Answer:"""
-            
+
             qa_chain = RetrievalQA.from_chain_type(
                 llm=self.llm,
                 chain_type="stuff",
                 retriever=vectorstore.as_retriever(search_kwargs={"k": 4}),
                 chain_type_kwargs={"prompt": PromptTemplate.from_template(prompt)}
             )
-            
+
             result = qa_chain.run(question)
-            
+
             await step4.complete(
                 output={"answer_length": len(result)},
                 confidence=0.85,
-                reasoning="Generated answer using dream theory and entries",
+                reasoning="Generated answer using weighted dream context and entries",
                 model="gpt-3.5-turbo"
             )
-            
+
             # Complete workflow
             await tracker.complete_workflow(result=result, confidence=0.85)
-            
-            # Save to existing model
+
+            # Save CustomQuestion result
             doctor_personality = settings.get('doctorPersonality', '') if settings else ''
             saved_question = await sync_to_async(CustomQuestion.objects.create)(
                 user_id=user_id,
                 question=question,
                 answer=result,
                 doctor_personality=doctor_personality,
+                weights=final_weights,
                 workflow_execution_id=workflow_id
             )
-            
+
             return result, workflow_id
-            
+
         except Exception as error:
+            print(f'❌ Error in custom_question_with_workflow: {error}')
             await tracker.fail_workflow(str(error))
             raise
+
+
+   
+    def _parse_weights_from_text(self, text: str) -> Dict[str, float]:
+        """
+        Robust parser: handles a 'Weights:' block with lines like 'theory: 0.7'.
+        Falls back to 0 if missing. Does not require YAML.
+        """
+        # Try to isolate the weights block
+        block_match = re.search(r"(?im)^weights:\s*(.+?)(?:^\S|\\Z)", text + "\nX", flags=re.DOTALL)
+        block = block_match.group(1) if block_match else text
+
+        def grab(key):
+            m = re.search(rf"(?im)^\s*{key}\s*:\s*([0-9]*\.?[0-9]+)", block)
+            return float(m.group(1)) if m else 0.0
+
+        w = {
+            "theory": grab("theory"),
+            "astrology": grab("astrology"),
+            "personality": grab("personality"),
+            "medicalHistory": grab("medicalHistory"),
+        }
+        return w
+
+    async def _get_doctor_profile(self, name: str) -> DoctorProfile:
+        """
+        Retrieve the best-matching doctor profile from the vector store.
+        """
+        query = f"{name} doctor profile dream interpretation"
+        docs = await self.knowledge_base.search_relevant_knowledge(query, k=1)
+        if not docs:
+            return self.DEFAULT_PROFILE
+
+        doc = docs[0]
+        text = doc.page_content
+        weights = self._parse_weights_from_text(text)
+        nm = re.search(r"(?im)^name\s*:\s*(.+)$", text)
+        desc = re.search(r"(?im)^(background|personality style|prompt style)\s*:\s*(.+)$", text, re.DOTALL)
+        return self.DoctorProfile(
+            name=(nm.group(1).strip() if nm else name),
+            description=(desc.group(2).strip() if desc else ""),
+            raw_text=text,
+            weights=weights
+        )
 
 
 # Example usage and helper functions

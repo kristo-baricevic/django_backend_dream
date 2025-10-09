@@ -57,17 +57,15 @@ app.add_middleware(
 # Request/Response models
 class AnalyzeEntryRequest(BaseModel):
     content: str
-    personality_type: Optional[str] = "empathetic"
+    settings: Optional[Dict[str, Any]] = None
 
 class QARequest(BaseModel):
     entries: List[JournalEntry]
-    personality: Optional[str] = None
     settings: Dict[str, Any] = None
 
 class QARequestCustom(BaseModel):
     question: str
     entries: List[JournalEntry]
-    personality: Optional[str] = None
     settings: Dict[str, Any] = None
 
 
@@ -90,20 +88,22 @@ def get_service() -> DreamJournalService:
 async def root():
     return {"message": "Dream Journal Analysis API", "version": "1.0.0"}
 
+# fastapi: endpoint
 @app.post("/analyze", response_model=JournalAnalysis)
 async def analyze_entry(
     request: AnalyzeEntryRequest,
     journal_service: DreamJournalService = Depends(get_service)
 ):
-    """Analyze a single journal entry and return structured analysis."""
+    """Analyze a single journal entry using doctor personality from settings."""
     try:
         result = await journal_service.analyze_single_entry(
             content=request.content,
-            personality=request.personality_type
+            settings=request.settings
         )
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
 
 @app.post("/qa")
 async def qa_analysis(
@@ -210,7 +210,6 @@ async def qa_with_workflow(
         process_analysis_workflow,
         workflow_id,
         request.entries,
-        request.personality,
         request.settings,
         journal_service
     )
@@ -250,7 +249,6 @@ async def custom_question_with_workflow(
         workflow_id,
         request.question,
         request.entries,
-        request.personality,
         request.settings,
         journal_service
     )
@@ -268,7 +266,6 @@ async def custom_question_with_workflow(
 async def process_analysis_workflow(
     workflow_id: str,
     entries: List[Dict],
-    personality: str,
     settings: Dict,
     journal_service: DreamJournalService
 ):
@@ -276,7 +273,6 @@ async def process_analysis_workflow(
     try:
         result, _ = await journal_service.analyzer.qa_analysis_with_workflow(
             entries, 
-            personality, 
             settings,
             existing_workflow_id=workflow_id  # Pass existing workflow_id
         )
@@ -287,7 +283,6 @@ async def process_custom_question_workflow(
     workflow_id: str,
     question: str,
     entries: List[Dict],
-    personality: str,
     settings: Dict,
     journal_service: DreamJournalService,
     existing_workflow_id: str = None
@@ -297,7 +292,6 @@ async def process_custom_question_workflow(
         result, _ = await journal_service.analyzer.custom_question_with_workflow(
             question,
             entries, 
-            personality, 
             settings,
             existing_workflow_id=workflow_id
         )

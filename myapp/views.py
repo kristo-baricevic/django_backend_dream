@@ -156,8 +156,6 @@ class CustomQuestionListView(ListAPIView):
 
         return qs
 
-
-
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def get_data(request):
@@ -212,6 +210,7 @@ def create_entry(request):
         return Response(serializer.data, status=status.HTTP_201_CREATED)
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+# views.py
 @api_view(['PUT', 'PATCH'])
 @permission_classes([AllowAny])
 def update_entry(request, id):
@@ -220,7 +219,6 @@ def update_entry(request, id):
         if request.user.is_authenticated:
             entry = JournalEntry.objects.get(id=id, user=request.user)
         else:
-            # Allow anonymous users to edit any entry (security risk!)
             entry = JournalEntry.objects.get(id=id)
     except JournalEntry.DoesNotExist:
         return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
@@ -228,36 +226,43 @@ def update_entry(request, id):
     data = request.data.copy()
     if request.user.is_authenticated:
         data['user'] = request.user.id
-    # Don't set user for anonymous requests
-    
+
     partial = request.method == 'PATCH'
     serializer = JournalEntrySerializer(entry, data=data, partial=partial)
     
     if serializer.is_valid():
         updated_entry = serializer.save()
-        
-        # Check if analysis exists for this entry
+
+        # If no analysis exists, call FastAPI to create one
         try:
-            analysis = Analysis.objects.get(entry=updated_entry)
+            Analysis.objects.get(entry=updated_entry)
         except Analysis.DoesNotExist:
-            # No analysis exists, create one by calling FastAPI
             try:
-                personality_type = request.data.get('personality', 'empathetic')
-                
-                # Call FastAPI analyze endpoint
+                # pull doctor personality ONLY from settings layer
+                doctor_personality = request.data.get('doctorPersonality', 'Academic')
+                influence = request.data.get('influence', {
+                    'astrology': 0.15,
+                    'personality': 0.15,
+                    'medicalHistory': 0.10
+                })
+                doctor_influence = request.data.get('doctor_influence', 0.5)
+
                 fastapi_response = requests.post(
                     'http://104.236.96.193:8001/analyze',
                     json={
                         'content': updated_entry.content,
-                        'personality_type': personality_type
+                        'settings': {
+                            'user_id': str(updated_entry.user.id) if updated_entry.user else None,
+                            'doctorPersonality': doctor_personality,
+                            'influence': influence,
+                            'doctor_influence': doctor_influence
+                        }
                     },
                     timeout=30
                 )
                 
                 if fastapi_response.status_code == 200:
                     analysis_data = fastapi_response.json()
-                    
-                    # Create Analysis object in Django
                     new_analysis = Analysis.objects.create(
                         entry=updated_entry,
                         user=updated_entry.user if updated_entry.user else None,
@@ -269,24 +274,19 @@ def update_entry(request, id):
                         subject=analysis_data['subject'],
                         sentiment_score=analysis_data['sentiment_score']
                     )
-
-                    # Link the entry to the analysis
                     updated_entry.analysis = new_analysis
                     updated_entry.save()
-                    
-                    # Re-serialize the entry to include the new analysis
                     updated_serializer = JournalEntrySerializer(updated_entry)
                     return Response(updated_serializer.data)
-                    
                 else:
                     print(f"FastAPI analysis failed: {fastapi_response.text}")
-                    
             except requests.RequestException as e:
                 print(f"Failed to connect to FastAPI service: {e}")
             except Exception as e:
                 print(f"Error creating analysis: {e}")
         
         return Response(serializer.data)
+
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 @api_view(['DELETE'])

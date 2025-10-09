@@ -44,6 +44,7 @@ CORS_ALLOWED_ORIGINS = [
 ]
 
 CSRF_TRUSTED_ORIGINS = [
+    "http://localhost:3000",
     "https://dream-journal-app.com",
     "https://www.dream-journal-app.com",
     "https://dream-app-nu.vercel.app",

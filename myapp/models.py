@@ -26,7 +26,7 @@ class WorkflowExecution(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True)
     
     # What workflow is running
-    workflow_type = models.CharField(max_length=50)  # 'cumulative_analysis' or 'custom_question'
+    workflow_type = models.CharField(max_length=50) 
     routine_name = models.CharField(max_length=200)
     
     # Status
@@ -84,8 +84,7 @@ class WorkflowStep(models.Model):
 class StepCitation(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     step = models.ForeignKey(WorkflowStep, on_delete=models.CASCADE, related_name='citations')
-    
-    source = models.CharField(max_length=50)  # 'jungian_symbols', 'natal_chart', etc.
+    source = models.CharField(max_length=50) 
     content = models.TextField()
     confidence = models.FloatField()
     reference = models.CharField(max_length=500, null=True, blank=True)
@@ -129,7 +128,7 @@ class CumulativeAnalysis(models.Model):
     user = models.ForeignKey('User', related_name='cumulative_analyses', on_delete=models.CASCADE, null=True, blank=True)
     analysis = models.TextField()
     doctor_personality = models.TextField(blank=True, default='')
-   
+    weights = models.JSONField(default=dict)
     workflow_execution = models.ForeignKey(
             WorkflowExecution, 
             on_delete=models.SET_NULL, 
@@ -147,6 +146,7 @@ class CustomQuestion(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     user = models.ForeignKey('User', related_name='custom_question', on_delete=models.CASCADE, null=True, blank=True)
     question = models.TextField()
+    weights = models.JSONField(default=dict)
     answer = models.TextField()
     doctor_personality = models.TextField(blank=True, default='')
 
@@ -161,4 +161,19 @@ class CustomQuestion(models.Model):
     class Meta:
         indexes = [models.Index(fields=['user'])]
 
+class DoctorProfile(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
+    name = models.CharField(max_length=100, unique=True)
+    description = models.TextField(blank=True)
+    full_prompt = models.TextField(blank=True) 
+    weights = models.JSONField(default=dict)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name

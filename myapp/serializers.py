@@ -19,13 +19,13 @@ class JournalEntrySerializer(serializers.ModelSerializer):
 class CumulativeAnalysisSerializer(serializers.ModelSerializer):
     class Meta:
         model = CumulativeAnalysis
-        fields = ['id', 'created_at', 'updated_at', 'user', 'analysis', 'doctor_personality']
+        fields = ['id', 'created_at', 'updated_at', 'user', 'analysis', 'doctor_personality', 'weights']
         read_only_fields = ['id', 'created_at', 'updated_at']
 
 
 class CustomQuestionSerializer(serializers.ModelSerializer):
     class Meta:
         model = CustomQuestion
-        fields = ['id', 'created_at', 'updated_at', 'user', 'question', 'answer', 'doctor_personality']
+        fields = ['id', 'created_at', 'updated_at', 'user', 'question', 'answer', 'doctor_personality', 'weights']
         read_only_fields = ['id', 'created_at', 'updated_at']
 

@@ -10,7 +10,7 @@ tiktoken>=0.5.2
 numpy>=1.24.3
 pydantic>=2.5.0
 pypdf==4.0.1
-Django==4.2.25
+Django>=4.2,<4.3
 djangorestframework
 django-cors-headers
 psycopg2-binary
