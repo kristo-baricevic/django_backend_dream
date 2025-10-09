@@ -957,7 +957,6 @@ class DreamJournalAnalyzer:
     async def analyze_entry(
         self,
         content: str,
-        personality_type: str = "Academic",
         settings: Dict[str, Any] = None
     ) -> JournalAnalysis:
         """Analyze single entry with doctor personality weighting and RAG architecture"""
@@ -969,7 +968,7 @@ class DreamJournalAnalyzer:
             dream_theory_docs = await self.enhanced_knowledge_search([fake_entry])
 
             # === Load doctor profile & compute final weights ===
-            doctor_name = personality_type or settings.get("doctorPersonality", "Academic") if settings else "Academic"
+            doctor_name = settings.get("doctorPersonality", "Academic") if settings else "Academic"
             doctor_profile = await sync_to_async(DoctorProfile.objects.filter(name__iexact=doctor_name).first)()
             if not doctor_profile:
                 profile = self.DEFAULT_PROFILE
@@ -1709,9 +1708,9 @@ class DreamJournalService:
         prompt = f"Write a vivid and imaginative dream about {theme}. Make it mysterious and emotionally rich, about 100-150 words."
         return await self.analyzer.ai_generate(prompt)
     
-    async def analyze_single_entry(self, content: str, personality: str = "empathetic") -> JournalAnalysis:
+    async def analyze_single_entry(self, content: str, settings: Dict[str, Any] = None) -> JournalAnalysis:
         """Analyze a single journal entry."""
-        return await self.analyzer.analyze_entry(content, personality)
+        return await self.analyzer.analyze_entry(content, settings)
 
     async def ask_custom_question(self, question: str, entries: List[JournalEntry], personality: str = None, settings: Dict[str, Any] = None) -> str:
         """Ask a custom question about the dreams."""
