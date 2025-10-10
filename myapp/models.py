@@ -119,6 +119,7 @@ class Analysis(models.Model):
     sentiment_score = models.FloatField(default=0)
     doctor_personality = models.TextField(blank=True, default='')
     weights = models.JSONField(default=dict)
+    symbols = models.JSONField(default=list)
     
     class Meta:
         indexes = [models.Index(fields=['user'])]

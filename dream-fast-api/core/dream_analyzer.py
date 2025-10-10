@@ -24,32 +24,71 @@ import spacy
 from collections import Counter
 from typing import List, Dict, Set
 import re
+from difflib import get_close_matches
 
 # Emotion types and colors (equivalent to your emotions parameter)
 class EmotionType(str, Enum):
-    JOY = "joy"
-    SADNESS = "sadness"
+    ADMIRATION = "admiration"
+    ADORATION = "adoration"
+    AESTHETIC_APPRECIATION = "aesthetic appreciation"
+    AMUSEMENT = "amusement"
     ANGER = "anger"
-    FEAR = "fear"
-    SURPRISE = "surprise"
-    DISGUST = "disgust"
     ANXIETY = "anxiety"
+    AWE = "awe"
+    AWKWARDNESS = "awkwardness"
+    BOREDOM = "boredom"
     CONTENTMENT = "contentment"
+    CALMNESS = "calmness"
+    CONFUSION = "confusion"
+    CRAVING = "craving"
+    DISGUST = "disgust"
+    EMPATHIC_PAIN = "empathic pain"
+    ENTRANCEMENT = "entrancement"
     EXCITEMENT = "excitement"
+    FEAR = "fear"
+    HORROR = "horror"
+    INTEREST = "interest"
     MELANCHOLY = "melancholy"
+    JOY = "joy"
+    NOSTALGIA = "nostalgia"
+    RELIEF = "relief"
+    ROMANCE = "romance"
+    SADNESS = "sadness"
+    SATISFACTION = "satisfaction"
+    SEXUAL_DESIRE = "sexual desire"
+    SURPRISE = "surprise"
 
-# Emotion color mapping
+
 EMOTION_COLORS = {
-    EmotionType.JOY: "#FFD700",
-    EmotionType.SADNESS: "#4169E1",
+    EmotionType.ADMIRATION: "#FFD1DC",
+    EmotionType.ADORATION: "#FFB6C1",
+    EmotionType.AESTHETIC_APPRECIATION: "#F5DEB3",
+    EmotionType.AMUSEMENT: "#FFE066",
     EmotionType.ANGER: "#DC143C",
-    EmotionType.FEAR: "#800080",
-    EmotionType.SURPRISE: "#FF69B4",
-    EmotionType.DISGUST: "#228B22",
     EmotionType.ANXIETY: "#FF4500",
+    EmotionType.AWE: "#9370DB",
+    EmotionType.AWKWARDNESS: "#C0C0C0",
+    EmotionType.BOREDOM: "#A9A9A9",
     EmotionType.CONTENTMENT: "#32CD32",
+    EmotionType.CALMNESS: "#87CEEB",
+    EmotionType.CONFUSION: "#B0C4DE",
+    EmotionType.CRAVING: "#FF8C00",
+    EmotionType.DISGUST: "#228B22",
+    EmotionType.EMPATHIC_PAIN: "#8B0000",
+    EmotionType.ENTRANCEMENT: "#DA70D6",
     EmotionType.EXCITEMENT: "#FF1493",
-    EmotionType.MELANCHOLY: "#708090"
+    EmotionType.FEAR: "#800080",
+    EmotionType.HORROR: "#4B0082",
+    EmotionType.INTEREST: "#00BFFF",
+    EmotionType.JOY: "#FFD700",
+    EmotionType.NOSTALGIA: "#CD853F",
+    EmotionType.RELIEF: "#98FB98",
+    EmotionType.ROMANCE: "#FF69B4",
+    EmotionType.SADNESS: "#4169E1",
+    EmotionType.SATISFACTION: "#66CDAA",
+    EmotionType.SEXUAL_DESIRE: "#FF6347",
+    EmotionType.SURPRISE: "#FF69B4",
+    EmotionType.MELANCHOLY: "#708090",
 }
 
 def get_emotion_color(emotion: EmotionType) -> str:
@@ -75,8 +114,9 @@ class JournalAnalysis(BaseModel):
     color: str = Field(description="a hexadecimal color code that represents the mood of the entry")
     interpretation: str = Field(description="your final analysis of the dream in about 5 or 6 sentences. Make this a dramatic interpretation. When you are done, suggest a song to listen to and a snack to eat.")
     sentiment_score: int = Field(description="sentiment of the text and rated on a scale from -10 to 10, where -10 is extremely negative, 0 is neutral, and 10 is extremely positive")
-    doctor_personality: str = Field(description="the doctor personality used for this analysis")  # ADD THIS
-    weights: Dict[str, float] = Field(description="the final weights used for this analysis")  # ADD THIS
+    doctor_personality: str = Field(description="the doctor personality used for this analysis") 
+    weights: Dict[str, float] = Field(description="the final weights used for this analysis") 
+    symbols: List[str] = Field(description="the primary symbols extracted from this dream")
 
 class JournalEntry(BaseModel):
     id: str
@@ -500,10 +540,12 @@ class DreamJournalAnalyzer:
         print(f"\n=== DIVERSE KNOWLEDGE RETRIEVAL ===")
         
         dream_elements = await self.symbol_extractor.extract_dream_elements(entries)
-        
+        print(f"\n=== DREAM ELEMENTS === {dream_elements}")
+
         # Build diverse, focused queries from structured data
         queries = self._build_queries_from_elements(dream_elements)
-        
+        print(f"\n=== QUERIES === {queries}")
+
         all_docs = []
         seen_content = set()
         source_counts = {}
@@ -540,7 +582,11 @@ class DreamJournalAnalyzer:
 
         print(f"=== END RETRIEVAL ===\n")
         
-        return all_docs
+        return {
+            "dream_elements": dream_elements,
+            "docs": all_docs
+        }
+
 
 
     def _build_queries_from_elements(self, dream_elements: dict) -> List[str]:
@@ -791,8 +837,9 @@ class DreamJournalAnalyzer:
 
         try:
             fake_entry = JournalEntry(id="temp", created_at=datetime.now(), content=content)
-            dream_theory_docs = await self.comprehensive_knowledge_retrieval([fake_entry], k=20)  # ← CHANGE THIS
-
+            result = await self.comprehensive_knowledge_retrieval([fake_entry], k=20)
+            dream_elements = result["dream_elements"]
+            dream_theory_docs = result["docs"]
 
             # === Load doctor profile & compute final weights ===
             doctor_name = settings.get("doctorPersonality", "Academic") if settings else "Academic"
@@ -813,6 +860,7 @@ class DreamJournalAnalyzer:
             print(f"user_inf === === {user_inf}")
             print(f"doctor_influence === === {doctor_influence}")
             print(f"profile_weights === === {profile_weights}")
+            print(f"dream_elements === === {dream_elements}")
 
             final_weights = self._compute_final_weights(
                 user_inf=user_inf,
@@ -835,12 +883,38 @@ class DreamJournalAnalyzer:
             prompt = f"""
             {doctor_intro}
             
-            Analyze this dream journal entry using the weighted reference material below.
+            Analyze this dream journal entry below using the weighted reference material below.
 
             WEIGHTED CONTEXT (based on doctor & user influence):
+            Here are some extracted passages that can help you make an informed analysis:
             {full_context}
 
-            Choose the PRIMARY emotion from: joy, sadness, anger, fear, surprise, disgust, anxiety, contentment, excitement, melancholy
+            These are the primary dream symbols and entities already extracted:
+            {dream_elements}
+
+            Here are some extracted passages that can help you make an informed analysis:
+            These are your weights. Each category has a value that determines how much weight
+            you give to that particular school of thought. 
+            {final_weights}
+
+            This is the dreamer's personality type:
+            {settings.get("personality")}
+
+            This is the dreamer's medical history:
+            {settings.get("medicalHistory")}
+
+            This is the dreamer's astrology:
+            {settings.get("astrology")}
+
+            And their current occupation is:
+            {settings.get("occupation")}
+
+            Choose the PRIMARY emotion from: admiration, adoration, aesthetic appreciation, amusement, anger, anxiety, awe, awkwardness, boredom, contentment, calmness, confusion, craving, disgust, empathic pain, entrancement, excitement, fear, horror, interest, joy, nostalgia, relief, romance, sadness, satisfaction, sexual desire, surprise
+            
+            Before answering, identify at least 3–7 key dream symbols or recurring elements found in the dream. 
+            These should be specific nouns, places, people, or objects (for example: “island”, “storm”, “mirror”, “bird”, “bridge”). 
+            If you already have extracted dream elements, merge them with any new ones you notice.
+
 
             Return ONLY valid JSON:
             {{
@@ -850,7 +924,8 @@ class DreamJournalAnalyzer:
                 "subject": "creative title",
                 "color": "hex color",
                 "interpretation": "5-6 sentence analysis with song and snack suggestions",
-                "sentiment_score": -10 to 10
+                "sentiment_score": -10 to 10,
+                "symbols": ["symbol1", "symbol2", "symbol3"]
             }}
 
             Dream: {content}
@@ -862,16 +937,30 @@ class DreamJournalAnalyzer:
             result = model.invoke(prompt)
             json_data = json.loads(result.content)
 
+            mood_str = self.normalize_emotion(json_data["mood"])
+            mood = EmotionType(mood_str)
+
+
+            symbols_raw = json_data.get("symbols", [])
+            if isinstance(symbols_raw, str):
+                symbols = [s.strip() for s in symbols_raw.split(",") if s.strip()]
+            else:
+                symbols = symbols_raw
+
+            print(f"symbols {symbols} symbols raw {symbols_raw} mood {mood}")
+
+
             parsed_result = JournalAnalysis(
-                mood=EmotionType(json_data['mood']),
+                mood=mood,
                 summary=json_data['summary'],
                 negative=json_data['negative'],
                 subject=json_data['subject'],
-                color=get_emotion_color(EmotionType(json_data['mood'])),
+                color=get_emotion_color(mood),
                 interpretation=json_data['interpretation'],
                 sentiment_score=json_data['sentiment_score'],
-                doctor_personality = doctor_name,
-                weights = final_weights
+                doctor_personality=doctor_name,
+                weights=final_weights,
+                symbols=symbols,
             )
 
             return parsed_result
@@ -879,6 +968,19 @@ class DreamJournalAnalyzer:
         except Exception as error:
             print(f'❌ Failed to analyze entry: {error}')
             raise
+
+    def normalize_emotion(self, value: str) -> str:
+        """Return the closest valid emotion string from EmotionType values."""
+        value = value.strip().lower()
+        valid_values = [e.value.lower() for e in EmotionType]
+        if value in valid_values:
+            return value
+        match = get_close_matches(value, valid_values, n=1, cutoff=0.6)
+        if match:
+            print(f"⚠️ Approximating emotion '{value}' as '{match[0]}'")
+            return match[0]
+        print(f"⚠️ No close match for '{value}', defaulting to 'interest'")
+        return "interest"
 
     async def batch_analyze_entries(self, entries: List[JournalEntry], personality_type: str = "empathetic") -> List[JournalAnalysis]:
         """
@@ -1052,7 +1154,9 @@ class DreamJournalAnalyzer:
                 step_type="knowledge_retrieval"
             )
 
-            knowledge_docs = await self.comprehensive_knowledge_retrieval(entries, k=20)
+            result = await self.comprehensive_knowledge_retrieval(entries, k=20)
+            dream_elements = result["dream_elements"]
+            knowledge_docs = result["docs"]
 
             citations = [
                 {
@@ -1286,7 +1390,9 @@ class DreamJournalAnalyzer:
                 step_type="knowledge_search"
             )
 
-            dream_theory_docs = await self.comprehensive_knowledge_retrieval(entries)
+            result = await self.comprehensive_knowledge_retrieval(entries, k=20)
+            dream_elements = result["dream_elements"]
+            dream_theory_docs = result["docs"]
 
             await step2.complete(
                 output={"theory_docs_found": len(dream_theory_docs)},
@@ -1539,13 +1645,210 @@ class DreamSymbolExtractor:
             }
     
     def _load_emotion_lexicon(self) -> Dict[str, List[str]]:
-        """Map emotions to their synonyms and related terms."""
+        """Comprehensive emotion lexicon for dream analysis."""
         return {
-            'fear': ['afraid', 'scared', 'terrified', 'frightened', 'anxious', 'nervous', 'worried', 'panic'],
-            'joy': ['happy', 'joyful', 'excited', 'elated', 'cheerful', 'delighted', 'thrilled'],
-            'sadness': ['sad', 'depressed', 'melancholy', 'sorrowful', 'grief', 'mourning'],
-            'anger': ['angry', 'furious', 'rage', 'irritated', 'frustrated', 'hostile'],
-            'confusion': ['confused', 'disoriented', 'lost', 'uncertain', 'bewildered'],
+            # === FEAR & ANXIETY ===
+            'fear': [
+                'afraid', 'scared', 'terrified', 'frightened', 'fearful',
+                'anxious', 'nervous', 'worried', 'panic', 'panicked', 'panicking',
+                'dread', 'dreading', 'alarmed', 'threatened', 'vulnerable',
+                'uneasy', 'tense', 'apprehensive', 'paranoid', 'phobic',
+                'horrified', 'petrified', 'trembling', 'shaking'
+            ],
+            
+            # === JOY & HAPPINESS ===
+            'joy': [
+                'happy', 'happiness', 'joyful', 'joyous', 'cheerful', 'merry',
+                'delighted', 'pleased', 'glad', 'content', 'contentment',
+                'satisfied', 'grateful', 'thankful', 'blessed',
+                'uplifted', 'radiant', 'glowing', 'beaming', 'smiling'
+            ],
+            
+            # === EXCITEMENT & THRILL ===
+            'excitement': [
+                'excited', 'exciting', 'thrilled', 'thrilling', 'exhilarated', 'exhilarating',
+                'euphoric', 'euphoria', 'ecstatic', 'ecstasy', 'elated', 'elation',
+                'adrenaline', 'rush', 'pumped', 'energized', 'alive',
+                'electric', 'charged', 'stimulated', 'aroused',
+                'enthusiastic', 'eager', 'keen', 'passionate'
+            ],
+            
+            # === SADNESS & GRIEF ===
+            'sadness': [
+                'sad', 'sadness', 'unhappy', 'depressed', 'depression', 'down',
+                'melancholy', 'melancholic', 'sorrowful', 'sorrow', 'mournful', 'mourning',
+                'grief', 'grieving', 'heartbroken', 'heartache', 'anguish',
+                'miserable', 'misery', 'despair', 'despairing', 'hopeless', 'hopelessness',
+                'gloomy', 'gloom', 'dejected', 'downcast', 'low',
+                'tearful', 'crying', 'weeping', 'sobbing'
+            ],
+            
+            # === ANGER & FRUSTRATION ===
+            'anger': [
+                'angry', 'anger', 'mad', 'furious', 'fury', 'rage', 'raging', 'enraged',
+                'irritated', 'irritation', 'annoyed', 'frustrated', 'frustration',
+                'hostile', 'hostility', 'aggressive', 'aggression',
+                'resentful', 'resentment', 'bitter', 'bitterness',
+                'indignant', 'outraged', 'livid', 'seething', 'fuming',
+                'violent', 'explosive', 'wrathful'
+            ],
+            
+            # === LOVE & AFFECTION ===
+            'love': [
+                'love', 'loving', 'loved', 'adore', 'adoring', 'adoration',
+                'affection', 'affectionate', 'tender', 'tenderness',
+                'care', 'caring', 'cherish', 'cherishing', 'devoted', 'devotion',
+                'fondness', 'fond', 'attached', 'attachment',
+                'warmth', 'warm', 'compassion', 'compassionate',
+                'romantic', 'romance', 'passionate', 'infatuated'
+            ],
+            
+            # === CONFIDENCE & PRIDE ===
+            'confidence': [
+                'confident', 'confidence', 'assured', 'assurance', 'self-assured',
+                'bold', 'boldness', 'brave', 'bravery', 'courageous', 'courage',
+                'fearless', 'daring', 'valiant', 'heroic',
+                'proud', 'pride', 'prideful', 'dignity',
+                'strong', 'strength', 'powerful', 'empowered', 'capable',
+                'invincible', 'unstoppable', 'mighty'
+            ],
+            
+            # === DETERMINATION & RESOLVE ===
+            'determination': [
+                'determined', 'determination', 'resolute', 'resolve', 'resolution',
+                'driven', 'motivated', 'motivation', 'ambitious', 'ambition',
+                'focused', 'focus', 'committed', 'commitment', 'dedicated', 'dedication',
+                'persistent', 'persistence', 'persevering', 'tenacious',
+                'unwavering', 'steadfast', 'firm', 'resolute',
+                'willpower', 'discipline', 'disciplined'
+            ],
+            
+            # === ACHIEVEMENT & SUCCESS ===
+            'achievement': [
+                'accomplished', 'accomplishment', 'achieved', 'achievement',
+                'successful', 'success', 'victorious', 'victory', 'triumphant', 'triumph',
+                'winner', 'winning', 'won', 'conquered', 'mastered',
+                'excellent', 'outstanding', 'superior', 'exceptional',
+                'fulfilled', 'fulfillment', 'satisfied', 'satisfaction'
+            ],
+            
+            # === DOUBT & INSECURITY ===
+            'doubt': [
+                'doubt', 'doubtful', 'doubting', 'uncertain', 'uncertainty',
+                'insecure', 'insecurity', 'unsure', 'hesitant', 'hesitation',
+                'questioning', 'skeptical', 'suspicious', 'distrust',
+                'inadequate', 'inadequacy', 'insufficient',
+                'self-doubt', 'unconfident', 'timid', 'tentative'
+            ],
+            
+            # === CONFUSION & DISORIENTATION ===
+            'confusion': [
+                'confused', 'confusion', 'confusing', 'disoriented', 'disorientation',
+                'lost', 'bewildered', 'puzzled', 'perplexed', 'baffled',
+                'unclear', 'muddled', 'mixed-up', 'scrambled',
+                'uncertain', 'unsure', 'foggy', 'hazy', 'dazed',
+                'overwhelmed', 'chaotic', 'chaos'
+            ],
+            
+            # === SHAME & GUILT ===
+            'shame': [
+                'ashamed', 'shame', 'shameful', 'embarrassed', 'embarrassment',
+                'humiliated', 'humiliation', 'mortified',
+                'guilty', 'guilt', 'remorse', 'remorseful', 'regret', 'regretful',
+                'apologetic', 'sorry', 'contrite',
+                'self-conscious', 'exposed', 'disgraced'
+            ],
+            
+            # === RELIEF & FREEDOM ===
+            'relief': [
+                'relief', 'relieved', 'released', 'freed', 'free', 'freedom',
+                'liberated', 'liberation', 'unburdened', 'unshackled',
+                'ease', 'eased', 'relaxed', 'calm', 'calming', 'peaceful', 'peace',
+                'soothed', 'comforted', 'reassured',
+                'exhale', 'breathe', 'lightened'
+            ],
+            
+            # === LONELINESS & ISOLATION ===
+            'loneliness': [
+                'lonely', 'loneliness', 'alone', 'isolated', 'isolation',
+                'abandoned', 'abandonment', 'deserted', 'forsaken',
+                'excluded', 'rejection', 'rejected', 'unwanted',
+                'solitary', 'empty', 'emptiness', 'hollow',
+                'disconnected', 'alienated', 'outcast'
+            ],
+            
+            # === JEALOUSY & ENVY ===
+            'jealousy': [
+                'jealous', 'jealousy', 'envious', 'envy', 'covetous',
+                'resentful', 'bitter', 'possessive',
+                'competitive', 'rivalry', 'threatened'
+            ],
+            
+            # === SURPRISE & SHOCK ===
+            'surprise': [
+                'surprised', 'surprise', 'shocking', 'shocked', 'shock',
+                'amazed', 'astonished', 'astounded', 'stunned',
+                'startled', 'jarred', 'jolted',
+                'unexpected', 'sudden', 'abrupt',
+                'awe', 'awestruck', 'wonder', 'wonderment'
+            ],
+            
+            # === DISGUST & REVULSION ===
+            'disgust': [
+                'disgusted', 'disgust', 'disgusting', 'revolted', 'repulsed', 'repulsion',
+                'nauseated', 'nauseous', 'sickened', 'sick',
+                'gross', 'vile', 'foul', 'offensive',
+                'aversion', 'distaste', 'loathing'
+            ],
+            
+            # === OVERWHELM & STRESS ===
+            'overwhelm': [
+                'overwhelmed', 'overwhelming', 'swamped', 'inundated',
+                'stressed', 'stress', 'stressful', 'pressure', 'pressured',
+                'burdened', 'weighed', 'heavy', 'exhausted', 'drained',
+                'frazzled', 'frantic', 'hectic', 'chaotic',
+                'too much', 'overloaded', 'stretched'
+            ],
+            
+            # === BOREDOM & APATHY ===
+            'boredom': [
+                'bored', 'boring', 'boredom', 'dull', 'monotonous', 'tedious',
+                'uninterested', 'indifferent', 'apathetic', 'apathy',
+                'listless', 'lifeless', 'uninspired',
+                'numb', 'empty', 'flat', 'blah'
+            ],
+            
+            # === CURIOSITY & INTEREST ===
+            'curiosity': [
+                'curious', 'curiosity', 'interested', 'interest', 'intrigued', 'intriguing',
+                'fascinated', 'fascinating', 'captivated', 'engrossed', 'absorbed',
+                'wonder', 'wondering', 'inquisitive', 'questioning',
+                'drawn', 'attracted', 'compelled'
+            ],
+            
+            # === HOPE & OPTIMISM ===
+            'hope': [
+                'hopeful', 'hope', 'hoping', 'optimistic', 'optimism',
+                'expectant', 'anticipating', 'anticipation', 'looking forward',
+                'positive', 'encouraged', 'promising',
+                'wishful', 'aspiring', 'dreaming'
+            ],
+            
+            # === PEACE & SERENITY ===
+            'peace': [
+                'peaceful', 'peace', 'serene', 'serenity', 'tranquil', 'tranquility',
+                'calm', 'calmness', 'still', 'stillness', 'quiet',
+                'relaxed', 'restful', 'centered', 'balanced',
+                'harmonious', 'harmony', 'zen', 'meditative'
+            ],
+            
+            # === NOSTALGIA & LONGING ===
+            'nostalgia': [
+                'nostalgic', 'nostalgia', 'longing', 'yearning', 'wistful',
+                'missing', 'homesick', 'sentimental',
+                'reminiscing', 'remembering', 'bittersweet',
+                'pining', 'aching'
+            ]
         }
     
     async def extract_dream_elements(self, entries: List[JournalEntry]) -> Dict[str, any]:
@@ -1607,7 +1910,6 @@ class DreamSymbolExtractor:
         print(f"🔍 Total symbols to match: {sum(len(v) for v in self.symbol_categories.values())}")
         print(f"🔍 First 10 tokens in dream: {[token.text for token in doc[:10]]}")
         print(f"🔍 First 10 lemmas: {[token.lemma_ for token in doc[:10]]}")
-    
 
         for category, symbols in self.symbol_categories.items():
             for token in doc:
