@@ -20,6 +20,10 @@ from myapp.models import CumulativeAnalysis, CustomQuestion, DoctorProfile
 from core.workflow_tracker import WorkflowTracker
 import re
 from dataclasses import dataclass
+import spacy
+from collections import Counter
+from typing import List, Dict, Set
+import re
 
 # Emotion types and colors (equivalent to your emotions parameter)
 class EmotionType(str, Enum):
@@ -73,7 +77,7 @@ class JournalAnalysis(BaseModel):
     sentiment_score: int = Field(description="sentiment of the text and rated on a scale from -10 to 10, where -10 is extremely negative, 0 is neutral, and 10 is extremely positive")
     doctor_personality: str = Field(description="the doctor personality used for this analysis")  # ADD THIS
     weights: Dict[str, float] = Field(description="the final weights used for this analysis")  # ADD THIS
-    
+
 class JournalEntry(BaseModel):
     id: str
     created_at: datetime
@@ -171,21 +175,46 @@ class DreamKnowledgeBase:
         self.embeddings = embeddings
         
     async def initialize(self):
-        """Load existing vectors or create new ones."""
-        if os.path.exists(os.path.join(self.vector_directory, "index.faiss")):
-            print("Loading existing knowledge base...")
-            try:
-                self.vectorstore = FAISS.load_local(
-                    self.vector_directory, 
-                    self.embeddings,
-                    allow_dangerous_deserialization=True
-                )
-            except Exception as e:
-                print(f"Failed to load existing knowledge base: {e}")
+        """Load existing vectors or create new ones if files changed."""
+        index_path = os.path.join(self.vector_directory, "index.faiss")
+        
+        if os.path.exists(index_path):
+            if self._should_rebuild():  # ← ADD THIS CHECK
+                print("📦 Files changed - rebuilding vectorstore...")
                 await self.build_knowledge_base()
+            else:
+                print("✅ Loading existing vectorstore...")
+                try:
+                    self.vectorstore = FAISS.load_local(
+                        self.vector_directory, 
+                        self.embeddings,
+                        allow_dangerous_deserialization=True
+                    )
+                except Exception as e:
+                    print(f"Failed to load, rebuilding: {e}")
+                    await self.build_knowledge_base()
         else:
-            print("Building knowledge base from files...")
+            print("🔨 Building new vectorstore...")
             await self.build_knowledge_base()
+    
+    def _should_rebuild(self) -> bool:  # ← ADD THIS METHOD
+        """Check if any files are newer than the existing index."""
+        index_path = os.path.join(self.vector_directory, "index.faiss")
+        
+        if not os.path.exists(index_path):
+            return True
+        
+        index_time = os.path.getmtime(index_path)
+        
+        for root, dirs, files in os.walk(self.files_directory):
+            for file in files:
+                if file.endswith(('.pdf', '.txt')):
+                    file_path = os.path.join(root, file)
+                    if os.path.getmtime(file_path) > index_time:
+                        print(f"🆕 Detected newer file: {file}")
+                        return True
+        
+        return False
     
     async def build_knowledge_base(self):
         """Process PDFs and text files to create FAISS index."""
@@ -241,33 +270,17 @@ class DreamKnowledgeBase:
             print(f"Error building knowledge base: {e}")
     
     async def search_relevant_knowledge(self, query: str, k: int = 3) -> List[Document]:
-        """Search for relevant passages."""
+        """Search with minimal logging."""
         if not self.vectorstore:
-            print("⚠️  Knowledge base not initialized - no search performed")
             return []
-        try:
-            print(f"🔍 Searching knowledge base with query: '{query[:100]}...'")
-            print(f"📚 Retrieving top {k} most relevant documents")
-            
-            results = self.vectorstore.similarity_search(query, k=k)
-            
-            if results:
-                print(f"✅ Found {len(results)} relevant documents:")
-                for i, doc in enumerate(results, 1):
-                    source = doc.metadata.get('source', 'Unknown')
-                    page = doc.metadata.get('page', 'N/A')
-                    print(f"   {i}. Source: {source} (Page: {page})")
-                    print(f"      FULL CONTENT RETRIEVED:")
-                    print(f"      ======================================")
-                    print(f"      {doc.page_content}")
-                    print(f"      ======================================")
-            else:
-                print("❌ No relevant documents found in knowledge base")
-            
-            return results
-        except Exception as e:
-            print(f"❌ Error searching knowledge base: {e}")
-            return []
+        
+        results = self.vectorstore.similarity_search(query, k=k)
+        
+        # Log only summary, not full content!
+        if results:
+            print(f"✅ Found {len(results)} documents from {len(set(d.metadata.get('source') for d in results))} sources")
+        
+        return results
 
 class DreamJournalAnalyzer:
     def __init__(self, openai_api_key: str):
@@ -275,7 +288,8 @@ class DreamJournalAnalyzer:
         os.environ["OPENAI_API_KEY"] = openai_api_key
         self.llm = ChatOpenAI(temperature=0.8, model_name='gpt-3.5-turbo')
         self.embeddings = OpenAIEmbeddings()
-        
+        self.symbol_extractor = DreamSymbolExtractor()
+
         # Initialize knowledge base
         self.knowledge_base = DreamKnowledgeBase(
             files_directory="knowledge_base",
@@ -305,40 +319,6 @@ class DreamJournalAnalyzer:
         """Call this during service startup."""
         await self.knowledge_base.initialize()
 
-    async def extract_dream_elements(self, entries: List[JournalEntry]) -> str:
-        """Extract key themes, symbols, and elements from dream entries."""
-        all_content = " ".join([entry.content.lower() for entry in entries])
-
-        # Load extracted dream symbols
-        try:
-            with open('core/extracted_dream_symbols.json', 'r') as f:
-                symbol_data = json.load(f)
-            dream_symbols = symbol_data.get('all_symbols_list', [])
-            print(f"Loaded {len(dream_symbols)} extracted symbols from knowledge base")
-        except FileNotFoundError:
-            print("Extracted symbols file not found, using default symbols")
-            dream_symbols = [
-                "flying", "falling", "water", "ocean", "river", "rain", "swimming",
-                "animals", "dog", "cat", "snake", "bird", "horse", "spider",
-                "death", "dying", "birth", "baby", "pregnancy",
-                "house", "home", "room", "door", "window", "stairs",
-                "car", "driving", "train", "airplane", "travel",
-                "chasing", "running", "hiding", "escaping", "trapped",
-                "fire", "burning", "smoke", "darkness", "light"
-            ]
-        except Exception as e:
-            print(f"Error loading extracted symbols: {e}")
-            dream_symbols = []
-
-        found_elements = [symbol for symbol in dream_symbols if symbol in all_content]
-
-        # Add emotional keywords
-        emotions = ["fear", "anxiety", "joy", "happiness", "sadness", "anger", "love", "hate", "worry", "peace"]
-        found_elements.extend([emotion for emotion in emotions if emotion in all_content])
-
-        result = " ".join(found_elements) if found_elements else "dreams symbols interpretation meaning"
-        print(f"Extracted dream elements: {result}")
-        return result
 
     def deduplicate_documents(self, documents: List[Document]) -> List[Document]:
         """Remove duplicate documents based on content similarity."""
@@ -364,7 +344,7 @@ class DreamJournalAnalyzer:
         
         # Stage 1: Extract themes and search for specific symbols
         print(f"Stage 1: Extracting and searching dream themes...")
-        dream_themes = await self.extract_dream_elements(entries)
+        dream_themes = await self.symbol_extractor.extract_dream_elements(entries)
         print(f"Extracted themes: {dream_themes}")
         theme_docs = await self.knowledge_base.search_relevant_knowledge(dream_themes, k=2)
         all_knowledge_docs.extend(theme_docs)
@@ -508,45 +488,114 @@ class DreamJournalAnalyzer:
         print("=== END CONTEXT ASSEMBLY ===\n")
         return full
 
-    async def comprehensive_knowledge_retrieval(self, entries: List[JournalEntry], k: int = 20) -> List[Document]:
+    async def comprehensive_knowledge_retrieval(
+        self, 
+        entries: List[JournalEntry], 
+        k: int = 20,
+        total_k: int = 20
+    ) -> List[Document]:
         """
-        Single comprehensive retrieval pass to get ALL relevant knowledge.
-        This is more efficient than multiple small searches.
+        Multi-query retrieval using structured dream elements.
         """
-        print(f"\n=== COMPREHENSIVE KNOWLEDGE RETRIEVAL ===")
+        print(f"\n=== DIVERSE KNOWLEDGE RETRIEVAL ===")
         
-        # Build a rich, semantic query from dream content
-        query_components = []
+        dream_elements = await self.symbol_extractor.extract_dream_elements(entries)
         
-        # 1. Extract actual dream elements
-        dream_elements = await self.extract_dream_elements(entries)
-        query_components.append(dream_elements)
+        # Build diverse, focused queries from structured data
+        queries = self._build_queries_from_elements(dream_elements)
         
-        # 2. Include full dream content (don't truncate - embeddings handle this)
-        combined_content = " ".join([entry.content for entry in entries[-3:]])  # Last 3 entries
-        query_components.append(combined_content)
+        all_docs = []
+        seen_content = set()
+        source_counts = {}
         
-        # 3. Add theoretical framing to guide retrieval
-        query_components.append("dream interpretation psychological meaning symbolism theory analysis")
+        for query in queries:
+            print(f"  Querying: {query[:60]}...")
+            
+            docs = await self.knowledge_base.search_relevant_knowledge(query, k=k)
+            
+            for doc in docs:
+                # Deduplicate by content hash
+                content_hash = hash(doc.page_content[:200])
+                source = doc.metadata.get('source', 'unknown')
+                
+                if content_hash in seen_content:
+                    continue
+                if source_counts.get(source, 0) >= 3:
+                    continue
+                
+                seen_content.add(content_hash)
+                source_counts[source] = source_counts.get(source, 0) + 1
+                all_docs.append(doc)
+                
+                if len(all_docs) >= total_k:
+                    break
+            
+            if len(all_docs) >= total_k:
+                break
         
-        # Build final query
-        full_query = " ".join(query_components)
-        
-        print(f"📝 Query length: {len(full_query)} chars")
-        print(f"🔍 Retrieving top {k} documents from knowledge base")
-        
-        # Single comprehensive search - let embeddings find what's relevant
-        docs = await self.knowledge_base.search_relevant_knowledge(full_query, k=k)
-        
-        # Optional: Use MMR for diversity to avoid redundant similar passages
-        if len(docs) > 10:
-            docs = await self.apply_mmr_reranking(docs, full_query, lambda_mult=0.7)
-        
-        print(f"✅ Retrieved {len(docs)} relevant knowledge passages")
-        print(f"=== END KNOWLEDGE RETRIEVAL ===\n")
-        
-        return docs
+        print(f"✅ Retrieved {len(all_docs)} passages from {len(source_counts)} sources")
+        print(f"   Source distribution: {source_counts}")
+        print(f"Total docs in vectorstore: {len(self.knowledge_base.vectorstore.docstore._dict)}")
+        print(f"Sources: {set(doc.metadata.get('source') for doc in self.knowledge_base.vectorstore.docstore._dict.values())}")
 
+        print(f"=== END RETRIEVAL ===\n")
+        
+        return all_docs
+
+
+    def _build_queries_from_elements(self, dream_elements: dict) -> List[str]:
+        """
+        Build targeted queries from structured dream elements.
+        """
+        queries = []
+        
+        # 1. Symbol-based queries (primary_symbols)
+        symbols = dream_elements.get('primary_symbols', [])[:3]  # Top 3
+        for symbol in symbols:
+            if symbol and len(symbol) > 2:  # Skip very short/generic words
+                queries.append(f"{symbol} symbolism dreams Jungian interpretation")
+                queries.append(f"what does {symbol} represent in dream analysis")
+        
+        # 2. Key phrase queries (more specific than single symbols)
+        phrases = dream_elements.get('key_phrases', [])[:3]
+        for phrase in phrases:
+            if phrase and len(phrase) > 5:
+                queries.append(f"{phrase} dream meaning psychological significance")
+        
+        # 3. Emotion-based queries
+        emotions = dream_elements.get('emotions', [])
+        unique_emotions = list(set(e['emotion'] for e in emotions))[:2]  # Top 2 unique
+        for emotion in unique_emotions:
+            queries.append(f"{emotion} in dreams emotional processing theory")
+        
+        # 4. Action-based queries
+        actions = dream_elements.get('actions', [])[:2]
+        for action in actions:
+            if action and len(action) > 3:
+                queries.append(f"{action} action dreams behavioral symbolism")
+        
+        # 5. Entity/location queries
+        entities = dream_elements.get('entities', [])
+        locations = [e[0] for e in entities if e[1] == 'LOC'][:2]
+        for loc in locations:
+            queries.append(f"{loc} setting dreams environmental symbolism")
+        
+        # 6. Thematic/general queries (as fallback)
+        queries.extend([
+            "recurring dream patterns archetypal meaning",
+            "dream emotions unconscious mind processing",
+            "symbolic dream interpretation depth psychology"
+        ])
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_queries = []
+        for q in queries:
+            if q.lower() not in seen:
+                seen.add(q.lower())
+                unique_queries.append(q)
+        
+        return unique_queries[:8]  # Return top 8 diverse queries
 
     async def apply_mmr_reranking(self, docs: List[Document], query: str, lambda_mult: float = 0.5) -> List[Document]:
         """
@@ -718,144 +767,6 @@ class DreamJournalAnalyzer:
         
         return metrics
 
-
-    async def qa_analysis(self, entries: List[JournalEntry], personality: str = None, settings: Dict[str, Any] = None) -> str:    
-        """
-        Two-stage analysis: Extract relevant quotes first, then synthesize.
-        This forces the LLM to engage with the knowledge base content.
-        """
-        try:
-            print(f"\n=== DREAM ANALYSIS WITH ENHANCED RAG ===")
-            
-            # Create vectorstore from journal entries
-            docs = [
-                Document(
-                    page_content=entry.content,
-                    metadata={"source": entry.id, "date": entry.created_at.isoformat()}
-                )
-                for entry in entries
-            ]
-            vectorstore = FAISS.from_documents(docs, self.embeddings)
-            
-            # COMPREHENSIVE knowledge retrieval
-            knowledge_docs = await self.comprehensive_knowledge_retrieval(entries, k=20)
-            
-            # STAGE 1: Extract relevant theoretical frameworks
-            print(f"\n=== STAGE 1: EXTRACTING RELEVANT FRAMEWORKS ===")
-            quotes_context = self.assemble_knowledge_context(knowledge_docs, max_tokens=6000)
-            
-            extraction_prompt = f"""You are analyzing dreams using specific dream interpretation theory. Your task is to identify the THEORETICAL FRAMEWORKS and CONCEPTS from the knowledge base that apply to these dreams.
-
-            KNOWLEDGE BASE:
-            {quotes_context}
-
-            DREAM CONTENT:
-            {{context}}
-
-            Extract 5-7 THEORETICAL CONCEPTS or FRAMEWORKS that are most relevant:
-            - Identify the theoretical classification system (e.g., types of dreams)
-            - Extract symbolic meanings for specific elements present in the dreams
-            - Note any interpretive frameworks or principles
-            - Highlight relevant warnings or prophecies the theory discusses
-
-            For each concept, provide:
-            1. The theoretical concept/framework
-            2. The specific passage or explanation from the knowledge base
-            3. How it applies to these specific dreams
-
-            Example format:
-            CONCEPT: Three types of dreams (subjective, physical, spiritual)
-            PASSAGE: "There are three pure types of dreams, namely, subjective, physical and spiritual. They relate to the past, present and future..."
-            APPLICATION: The time-travel dream showing past and future suggests a spiritual-type dream with prophetic elements.
-
-            Extract the relevant theoretical frameworks:"""
-
-            extract_chain = RetrievalQA.from_chain_type(
-                llm=self.llm,
-                chain_type="stuff",
-                retriever=vectorstore.as_retriever(search_kwargs={"k": min(6, len(docs))}),
-                chain_type_kwargs={"prompt": PromptTemplate.from_template(extraction_prompt)}
-            )
-            
-            relevant_quotes = extract_chain.run("Extract the most relevant theoretical frameworks for these dreams.")
-            print(f"✅ Extracted relevant theoretical frameworks:")
-            print(relevant_quotes)
-            print(f"=== END FRAMEWORK EXTRACTION ===\n")
-            
-            # STAGE 2: Synthesize analysis using extracted quotes
-            print(f"\n=== STAGE 2: SYNTHESIZING ANALYSIS ===")
-            
-            user_context = self.assemble_user_context(settings)
-            
-            synthesis_prompt_parts = [
-                "You are an expert dream analyst with deep knowledge of dream interpretation theory.",
-                "\n\nRELEVANT THEORETICAL FRAMEWORKS FOR THESE DREAMS:",
-                relevant_quotes,
-            ]
-            
-            if user_context:
-                synthesis_prompt_parts.append(f"\n\nDreamer's profile:\n{user_context}")
-            
-            if personality:
-                synthesis_prompt_parts.append(f"\n\nAnalysis style: {personality}")
-            
-            synthesis_prompt_parts.append("""
-            \n\nDream entries: {context}
-
-            YOUR TASK:
-            Write a cohesive dream analysis that naturally integrates the theoretical frameworks listed above.
-
-            STRUCTURE:
-            - Paragraph 1: Central pattern across all dreams
-            - Paragraphs 2-3: Deep analysis applying the theoretical frameworks (weave the concepts naturally into your interpretation)
-            - Paragraph 4: Connection to dreamer's profile and current life situation
-
-            CRITICAL REQUIREMENTS:
-            - Apply the CONCEPTS and FRAMEWORKS from above naturally - write as if you've internalized this theory
-            - DO NOT use phrases like "Quote 1", "the framework states", "according to the knowledge base"
-            - Ground ALL symbolic interpretations in these specific theoretical concepts
-            - Write in flowing, authoritative paragraphs addressing the dreamer as "you"
-            - NO numbered lists, NO explicit citations
-
-            STYLE:
-            Your analysis should read as if written by an expert who naturally thinks in terms of these specific dream theories.
-            The theoretical framework should be invisible scaffolding that shapes your insights - not visible citations.
-
-            Analysis:""")
-            
-            final_prompt = "".join(synthesis_prompt_parts)
-            
-            synthesis_chain = RetrievalQA.from_chain_type(
-                llm=self.llm,
-                chain_type="stuff",
-                retriever=vectorstore.as_retriever(search_kwargs={"k": min(6, len(docs))}),
-                chain_type_kwargs={"prompt": PromptTemplate.from_template(final_prompt)}
-            )
-            
-            result = synthesis_chain.run("Provide the dream analysis using the quoted theory.")
-            
-            # Validate that analysis actually uses knowledge base
-            validation_metrics = self.validate_analysis_quality(result, knowledge_docs)
-            
-            print(f"✅ Analysis complete")
-            print(f"=== END DREAM ANALYSIS ===\n")
-            user_id = settings.get('user_id') if settings else None
-            doctor_personality = settings.get('doctorPersonality', '') if settings else ''
-
-            # user = entries[0].user if entries and entries[0].user else None
-            cumulative = await sync_to_async(CumulativeAnalysis.objects.create)(
-                user_id=user_id,
-                analysis=result,
-                doctor_personality=doctor_personality
-            )
-            print(f"💾 Saved cumulative analysis: {cumulative.id}")
-
-            return result
-            
-        except Exception as error:
-            print(f'❌ Error in QA analysis: {error}')
-            raise
-
     async def ai_generate(self, question: str) -> str:
         """
         Function 2: Generate sample dream content.
@@ -868,93 +779,6 @@ class DreamJournalAnalyzer:
         except Exception as error:
             print(f'Error in AI generation: {error}')
             raise Exception('Failed to generate AI content')
-
-    async def custom_question_analysis(
-        self, 
-        custom_question: str, 
-        entries: List[JournalEntry], 
-        settings: Dict[str, Any] = None
-    ) -> str:
-        """Handle custom questions with RAG architecture"""
-        try:
-            print(f"\n=== CUSTOM QUESTION ANALYSIS ===")
-            print(custom_question)
-
-            docs = [
-                Document(
-                    page_content=entry.content,
-                    metadata={"source": entry.id, "date": entry.created_at.isoformat()}
-                )
-                for entry in entries
-            ]
-            
-            vectorstore = FAISS.from_documents(docs, self.embeddings)
-            
-            # === LOAD DOCTOR PROFILE & COMPUTE FINAL WEIGHTS ===
-            doctor_name = settings.get("doctorPersonality", "Academic") if settings else "Academic"
-            doctor_profile = await sync_to_async(DoctorProfile.objects.filter(name__iexact=doctor_name).first)()
-            profile = doctor_profile or DEFAULT_PROFILE
-
-            user_inf = settings.get("influence", {}) if settings else {}
-            doctor_influence = settings.get("doctor_influence", 0.5) if settings else 0.5
-
-            final_weights = self._compute_final_weights(
-                user_inf=user_inf,
-                doctor_w=profile.weights,
-                doctor_influence=doctor_influence,
-            )
-
-            print(f"🔮 Final blended weights for {doctor_name}: {final_weights}")
-
-            # Get full context
-            dream_theory_docs = await self.enhanced_knowledge_search(entries)
-            full_context = await self.assemble_full_context(dream_theory_docs, settings, weights=final_weights)
-
-            personality_instruction = ""
-            if settings and settings.get("doctorPersonality"):
-                personality_instruction = f"\n\nResponse Style:\n{settings['doctorPersonality']}\n"
-
-            prompt = f"""
-            Answer the following question about the dream journal entries.
-            
-            Use this instruction to guide your own personality and background: {personality_instruction}
-            
-
-            This is the context of dream theory that you can use to inform your response:
-            {full_context}
-            
-            These are the journal entries you can source your data from to inform your answer to the question:
-            Journal Entries: {{context}}
-
-            This is the question you must answer:
-            Question: {custom_question}
-            Answer:"""
-            
-            qa_chain = RetrievalQA.from_chain_type(
-                llm=self.llm,
-                chain_type="stuff", 
-                retriever=vectorstore.as_retriever(search_kwargs={"k": 4}),
-                chain_type_kwargs={"prompt": PromptTemplate.from_template(prompt)}
-            )
-            
-            result = qa_chain.run(custom_question)
-            user_id = settings.get('user_id') if settings else None
-            doctor_personality = settings.get('doctorPersonality', '') if settings else ''
-
-            # user = entries[0].user if entries and entries[0].user else None
-            saved_question = await sync_to_async(CustomQuestion.objects.create)(
-                user_id=user_id,
-                question=custom_question,
-                answer=result,
-                doctor_personality=doctor_personality,
-            )
-            print(f"💾 Saved cumulative analysis: {saved_question.id}")
-
-            return result
-            
-        except Exception as error:
-            print(f'Error in custom question: {error}')
-            raise
             
     async def analyze_entry(
         self,
@@ -967,7 +791,8 @@ class DreamJournalAnalyzer:
 
         try:
             fake_entry = JournalEntry(id="temp", created_at=datetime.now(), content=content)
-            dream_theory_docs = await self.enhanced_knowledge_search([fake_entry])
+            dream_theory_docs = await self.comprehensive_knowledge_retrieval([fake_entry], k=20)  # ← CHANGE THIS
+
 
             # === Load doctor profile & compute final weights ===
             doctor_name = settings.get("doctorPersonality", "Academic") if settings else "Academic"
@@ -1054,117 +879,6 @@ class DreamJournalAnalyzer:
         except Exception as error:
             print(f'❌ Failed to analyze entry: {error}')
             raise
-
-    
-    # async def analyze_entry(self, content: str, personality_type: str = "empathetic") -> JournalAnalysis:
-    #     """
-    #     Function 3: Analyze journal entry with structured output.
-    #     Equivalent to the analyze() function in your JS code.
-    #     """
-    #     try:
-    #         print(f"\n=== KNOWLEDGE BASE SEARCH ===")
-    #         print(f"Searching knowledge base for: '{content[:100]}...'")
-            
-    #         # Search for relevant dream interpretation knowledge
-    #         # knowledge_docs = await self.knowledge_base.search_relevant_knowledge(content, k=3)
-    #         fake_entry = JournalEntry(id="temp", created_at=datetime.now(), content=content)
-    #         knowledge_docs = await self.enhanced_knowledge_search([fake_entry])
-
-    #         print(f"Found {len(knowledge_docs)} relevant knowledge documents")
-            
-    #         knowledge_context = ""
-            
-    #         if knowledge_docs:
-    #             print(f"Knowledge documents retrieved:")
-    #             knowledge_context = "\n\nRelevant dream interpretation references:\n"
-    #             for i, doc in enumerate(knowledge_docs, 1):
-    #                 # Limit context length
-    #                 snippet = doc.page_content[:300] + "..." if len(doc.page_content) > 300 else doc.page_content
-    #                 knowledge_context += f"{i}. {snippet}\n"
-                    
-    #                 # Log what was found
-    #                 source_file = doc.metadata.get('source', 'Unknown file')
-    #                 print(f"  {i}. From: {source_file}")
-    #                 print(f"     Content preview: {snippet[:150]}...")
-    #         else:
-    #             print("No relevant knowledge found - proceeding with basic analysis")
-            
-    #         personality = get_personality(personality_type)
-            
-    #         prompt = f"""
-    #         {personality}
-            
-    #         Analyze the following dream journal entry. If relevant references are provided below, incorporate insights from established dream interpretation theory into your analysis.
-            
-    #         {knowledge_context}
-            
-    #         Consider the FULL RANGE of emotions present. Choose the PRIMARY emotion from these options: joy, sadness, anger, fear, surprise, disgust, anxiety, contentment, excitement, melancholy
-            
-    #         Do NOT default to excitement - carefully consider which emotion best represents the overall feeling of the dream.
-
-    #         Examples of mood analysis:
-    #         - Flying dreams often indicate "joy" or "contentment"  
-    #         - Being chased indicates "fear" or "anxiety"
-    #         - Losing something indicates "sadness" or "melancholy"
-
-    #         Return ONLY a valid JSON response with these exact fields:
-            
-    #         {{
-    #             "mood": "choose one: joy, sadness, anger, fear, surprise, disgust, anxiety, contentment, excitement, melancholy",
-    #             "summary": "brief summary of the dream",
-    #             "negative": true or false,
-    #             "subject": "creative title for the dream", 
-    #             "color": "hex color code representing the mood",
-    #             "interpretation": "5-6 sentence analysis incorporating dream theory if available, with song and snack suggestions",
-    #             "sentiment_score": integer from -10 to 10
-    #         }}
-            
-    #         Dream Journal Entry: {content}
-            
-    #         Return only the JSON object, no other text:
-    #         """
-            
-    #         print(f"\n=== FINAL PROMPT TO LLM ===")
-    #         print(f"Prompt length: {len(prompt)} characters")
-    #         print(f"Knowledge context length: {len(knowledge_context)} characters")
-    #         if knowledge_context:
-    #             print(f"Knowledge integration: YES - {len(knowledge_docs)} references included")
-    #         else:
-    #             print(f"Knowledge integration: NO - proceeding without references")
-    #         print(f"Full prompt preview (first 500 chars):")
-    #         print(f"{prompt[:500]}...")
-    #         print(f"=== END PROMPT PREVIEW ===\n")
-            
-    #         model = ChatOpenAI(temperature=0.3, model_name='gpt-3.5-turbo')
-    #         result = model.invoke(prompt)
-    #         result_content = result.content
-            
-    #         print(f"Raw LLM output: {result_content}")
-            
-    #         # Parse JSON directly
-    #         json_data = json.loads(result_content)
-            
-    #         # Create JournalAnalysis object manually
-    #         parsed_result = JournalAnalysis(
-    #             mood=EmotionType(json_data['mood']),
-    #             summary=json_data['summary'],
-    #             negative=json_data['negative'],
-    #             subject=json_data['subject'],
-    #             color=json_data['color'],
-    #             interpretation=json_data['interpretation'],
-    #             sentiment_score=json_data['sentiment_score']
-    #         )
-            
-    #         print(f"Parsed mood: {parsed_result.mood}")
-            
-    #         # Set the color based on mood
-    #         parsed_result.color = get_emotion_color(parsed_result.mood)
-            
-    #         return parsed_result
-            
-    #     except Exception as error:
-    #         print(f'Failed to parse analysis result: {error}')
-    #         raise Exception('Failed to analyze dream journal entry')
 
     async def batch_analyze_entries(self, entries: List[JournalEntry], personality_type: str = "empathetic") -> List[JournalAnalysis]:
         """
@@ -1296,7 +1010,6 @@ class DreamJournalAnalyzer:
             pass
 
         if profile is None:
-            # MUST exist in THIS module to avoid NameError
             profile = self.DEFAULT_PROFILE
 
         user_inf = (settings or {}).get("influence", {})
@@ -1308,8 +1021,7 @@ class DreamJournalAnalyzer:
             doctor_influence=doctor_influence,
         )
 
-
-        print(f"🔮 Final blended weights for {doctor_name}: {final_weights}")
+        print(f"🔮Final blended weights for {doctor_name}: {final_weights}")
 
         try:
             # STEP 1: Create vectorstore from entries
@@ -1574,7 +1286,7 @@ class DreamJournalAnalyzer:
                 step_type="knowledge_search"
             )
 
-            dream_theory_docs = await self.enhanced_knowledge_search(entries)
+            dream_theory_docs = await self.comprehensive_knowledge_retrieval(entries)
 
             await step2.complete(
                 output={"theory_docs_found": len(dream_theory_docs)},
@@ -1659,8 +1371,6 @@ class DreamJournalAnalyzer:
             print(f'❌ Error in custom_question_with_workflow: {error}')
             await tracker.fail_workflow(str(error))
             raise
-
-
    
     def _parse_weights_from_text(self, text: str) -> Dict[str, float]:
         """
@@ -1798,6 +1508,218 @@ class DreamJournalAnalyzer:
         
         return ' '.join(snippets)
 
+class DreamSymbolExtractor:
+    def __init__(self):
+        # Load once at initialization
+        self.nlp = spacy.load("en_core_web_sm")
+        self.symbol_categories = self._load_symbol_taxonomy()
+        self.emotion_lexicon = self._load_emotion_lexicon()
+        
+    def _load_symbol_taxonomy(self) -> Dict[str, Set[str]]:
+        """Load symbols organized by category with synonyms."""
+        try:
+            with open('core/extracted_dream_symbols.json', 'r') as f:
+                data = json.load(f)
+            
+            # Convert flat list to categorized dict
+            all_symbols = data.get('all_symbols_list', [])
+            
+            # Quick categorization (or use the fallback below)
+            return {
+                'all': set(all_symbols)  # Put everything in one category for now
+            }
+        except:
+            return {
+                'motion': {'flying', 'falling', 'running', 'chasing', 'escaping', 'floating'},
+                'water': {'ocean', 'river', 'lake', 'rain', 'flood', 'swimming', 'drowning'},
+                'animals': {'dog', 'cat', 'snake', 'bird', 'horse', 'spider', 'lion'},
+                'structures': {'house', 'building', 'room', 'door', 'window', 'stairs', 'bridge'},
+                'vehicles': {'car', 'train', 'airplane', 'boat', 'bicycle'},
+                'transitions': {'death', 'birth', 'wedding', 'graduation', 'journey'},
+            }
+    
+    def _load_emotion_lexicon(self) -> Dict[str, List[str]]:
+        """Map emotions to their synonyms and related terms."""
+        return {
+            'fear': ['afraid', 'scared', 'terrified', 'frightened', 'anxious', 'nervous', 'worried', 'panic'],
+            'joy': ['happy', 'joyful', 'excited', 'elated', 'cheerful', 'delighted', 'thrilled'],
+            'sadness': ['sad', 'depressed', 'melancholy', 'sorrowful', 'grief', 'mourning'],
+            'anger': ['angry', 'furious', 'rage', 'irritated', 'frustrated', 'hostile'],
+            'confusion': ['confused', 'disoriented', 'lost', 'uncertain', 'bewildered'],
+        }
+    
+    async def extract_dream_elements(self, entries: List[JournalEntry]) -> Dict[str, any]:
+        """
+        Extract symbols, themes, and emotions using NLP.
+        Returns structured data instead of just a string.
+        """
+        combined_text = " ".join([entry.content for entry in entries])
+        doc = self.nlp(combined_text)
+        
+        # 1. Extract noun phrases (captures "starting line", "adventure race")
+        noun_phrases = self._extract_meaningful_phrases(doc)
+        
+        # 2. Extract named entities (people, places, organizations)
+        entities = [(ent.text, ent.label_) for ent in doc.ents]
+        
+        # 3. Match against symbol taxonomy with word boundaries
+        matched_symbols = self._match_symbols_with_context(doc)
+        
+        # 4. Extract emotions with semantic matching
+        emotions = self._extract_emotions(doc)
+        
+        # 5. Extract actions/verbs (what's happening in the dream)
+        actions = self._extract_key_actions(doc)
+        
+        # 6. Weight by frequency and importance
+        weighted_elements = self._weight_elements(
+            noun_phrases, matched_symbols, emotions, actions
+        )
+        
+        result = {
+            'primary_symbols': weighted_elements['symbols'][:5],
+            'key_phrases': weighted_elements['phrases'][:5],
+            'emotions': emotions,
+            'actions': actions[:5],
+            'entities': entities,
+            'raw_text_sample': combined_text[:200]  # For context
+        }
+        
+        print(f"Extracted: {len(result['primary_symbols'])} symbols, "
+              f"{len(result['key_phrases'])} phrases, "
+              f"{len(result['emotions'])} emotions")
+        
+        return result
+    
+    def _extract_meaningful_phrases(self, doc) -> List[str]:
+        """Extract multi-word noun phrases, not just single words."""
+        phrases = []
+        for chunk in doc.noun_chunks:
+            # Filter out very generic or short phrases
+            if len(chunk.text.split()) >= 2 and chunk.root.pos_ == 'NOUN':
+                phrases.append(chunk.text.lower())
+        return phrases
+    
+    def _match_symbols_with_context(self, doc) -> Dict[str, Dict]:
+        """Match symbols using word boundaries and track context."""
+        matched = {}
+        print(f"🔍 Symbol categories loaded: {list(self.symbol_categories.keys())}")
+        print(f"🔍 Total symbols to match: {sum(len(v) for v in self.symbol_categories.values())}")
+        print(f"🔍 First 10 tokens in dream: {[token.text for token in doc[:10]]}")
+        print(f"🔍 First 10 lemmas: {[token.lemma_ for token in doc[:10]]}")
+    
+
+        for category, symbols in self.symbol_categories.items():
+            for token in doc:
+                lemma = token.lemma_.lower()
+                text = token.text.lower()
+                
+                # Check if token matches any symbol (using lemma for better matching)
+                if lemma in symbols or text in symbols:
+                    # Get context (surrounding words)
+                    context_start = max(0, token.i - 3)
+                    context_end = min(len(doc), token.i + 4)
+                    context = doc[context_start:context_end].text
+                    
+                    symbol_key = lemma if lemma in symbols else text
+                    
+                    if symbol_key not in matched:
+                        matched[symbol_key] = {
+                            'category': category,
+                            'frequency': 0,
+                            'contexts': []
+                        }
+                    
+                    matched[symbol_key]['frequency'] += 1
+                    matched[symbol_key]['contexts'].append(context)
+        
+        return matched
+    
+    def _extract_emotions(self, doc) -> List[Dict[str, any]]:
+        """Extract emotions with intensity and context."""
+        found_emotions = []
+        
+        for base_emotion, variants in self.emotion_lexicon.items():
+            for token in doc:
+                lemma = token.lemma_.lower()
+                text = token.text.lower()
+                
+                if text in variants or lemma in variants:
+                    # Check for intensifiers (very, extremely, slightly)
+                    intensity = self._get_emotion_intensity(token)
+                    
+                    found_emotions.append({
+                        'emotion': base_emotion,
+                        'word': text,
+                        'intensity': intensity,
+                        'context': doc[max(0, token.i-2):min(len(doc), token.i+3)].text
+                    })
+        
+        return found_emotions
+    
+    def _get_emotion_intensity(self, token) -> str:
+        """Determine intensity based on modifiers."""
+        intensifiers = {'very', 'extremely', 'incredibly', 'absolutely'}
+        diminishers = {'slightly', 'somewhat', 'a bit', 'kind of'}
+        
+        # Check previous token
+        if token.i > 0:
+            prev = token.doc[token.i - 1].text.lower()
+            if prev in intensifiers:
+                return 'high'
+            elif prev in diminishers:
+                return 'low'
+        
+        return 'medium'
+    
+    def _extract_key_actions(self, doc) -> List[str]:
+        """Extract main verbs/actions happening in the dream."""
+        actions = []
+        for token in doc:
+            if token.pos_ == 'VERB' and token.dep_ in ('ROOT', 'conj'):
+                # Get the action with its object if present
+                action_phrase = token.lemma_
+                # Add direct object if exists
+                for child in token.children:
+                    if child.dep_ == 'dobj':
+                        action_phrase += f" {child.text}"
+                actions.append(action_phrase.lower())
+        return list(set(actions))  # Remove duplicates
+    
+    def _weight_elements(self, phrases, symbols, emotions, actions) -> Dict:
+        """Weight elements by frequency AND symbolic importance."""
+        
+        symbol_weights = {}
+        for symbol, data in symbols.items():
+            # data['frequency'] = how often it appears in THIS dream
+            # We should also consider how "dream-specific" this word is
+            
+            # Get the symbol's overall frequency from the loaded taxonomy
+            base_importance = self._get_symbol_importance(symbol)
+            
+            # Weight = frequency in dream × symbolic importance
+            symbol_weights[symbol] = data['frequency'] * base_importance
+        
+        sorted_symbols = sorted(symbol_weights.items(), key=lambda x: x[1], reverse=True)
+        
+        phrase_weights = Counter(phrases)
+        sorted_phrases = sorted(phrase_weights.items(), key=lambda x: x[1], reverse=True)
+        
+        return {
+            'symbols': [s[0] for s in sorted_symbols],
+            'phrases': [p[0] for p in sorted_phrases]
+        }
+
+    def _get_symbol_importance(self, symbol: str) -> float:
+        """Score how 'dream-specific' a word is based on JSON frequency."""
+        # Higher JSON frequency = more important dream symbol
+        with open('core/extracted_dream_symbols.json', 'r') as f:
+            data = json.load(f)
+        
+        freq = data.get('symbol_frequencies', {}).get(symbol, 1)
+        
+        # Normalize: symbols with 100+ occurrences get higher weight
+        return min(freq / 50, 5.0)  # Cap at 5x multiplier
 
 # Example usage and helper functions
 class DreamJournalService:
@@ -1826,4 +1748,3 @@ class DreamJournalService:
         """Ask a custom question about the dreams."""
         return await self.analyzer.custom_question_analysis(question, entries, personality, settings)
 
-    

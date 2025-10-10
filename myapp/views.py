@@ -247,6 +247,7 @@ def update_entry(request, id):
                 doctor_influence = influence.get('doctor', 0.5)
 
                 fastapi_response = requests.post(
+                    # 'http://localhost:8001/analyze',
                     'http://104.236.96.193:8001/analyze',
                     json={
                         'content': updated_entry.content,

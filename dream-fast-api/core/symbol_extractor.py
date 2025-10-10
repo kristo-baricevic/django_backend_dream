@@ -204,7 +204,9 @@ class DreamSymbolExtractor:
         # Filter symbols that appear at least 2 times and are reasonable length
         filtered_symbols = [
             symbol for symbol, count in symbol_counts.items() 
-            if count >= 2 and 2 <= len(symbol.split()) <= 3 and len(symbol) <= 30
+            if count >= 3 and  # At least 3 occurrences
+            len(symbol.split()) == 1 and  # Single words only
+            3 <= len(symbol) <= 20  # Reasonable length
         ]
         
         print(f"After filtering: {len(filtered_symbols)} symbols")
