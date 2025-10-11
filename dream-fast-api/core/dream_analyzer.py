@@ -1111,7 +1111,7 @@ class DreamJournalAnalyzer:
                 # Ensure it has the shape we need
                 profile = type("TmpProfile", (), {})()
                 profile.name = doctor_profile.name or "Doctor"
-                profile.description = doctor_profile.description or ""
+                profile.background = doctor_profile.background or ""
                 profile.raw_text = getattr(doctor_profile, "raw_text", "") or ""
                 profile.weights = doctor_profile.weights or {
                     "theory": 0.7, "astrology": 0.15, "personality": 0.15, "medicalHistory": 0.0
@@ -1252,7 +1252,7 @@ class DreamJournalAnalyzer:
             )
 
             synthesis_prompt = f"""You are {profile.name}, a dream analyst.
-            {profile.description}
+            {profile.background}
 
             WEIGHTED CONTEXT (based on doctor & user influence):
             {full_context}
@@ -1438,7 +1438,7 @@ class DreamJournalAnalyzer:
 
 
             prompt = f"""You are {profile.name}, a dream analyst.
-            {profile.description}
+            {profile.background}
 
             WEIGHTED CONTEXT (based on doctor & user influence):
             {full_context}
@@ -1592,8 +1592,8 @@ class DreamJournalAnalyzer:
         sections = []
         
         # Add doctor voice FIRST
-        if doctor_profile.description:
-            sections.append(f"=== YOUR VOICE & APPROACH ===\n{doctor_profile.description}\n")
+        if doctor_profile.background:
+            sections.append(f"=== YOUR VOICE & APPROACH ===\n{doctor_profile.background}\n")
         
         # Fetch and weight each category
         categories = [
