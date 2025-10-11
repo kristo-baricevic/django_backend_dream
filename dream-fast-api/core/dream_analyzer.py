@@ -343,15 +343,24 @@ class DreamJournalAnalyzer:
     @dataclass
     class DoctorProfile:
         name: str
-        description: str
+        archetype: str
+        tone: str
+        background: str
+        personality_style: str
+        prompt_style: str
         raw_text: str
         weights: Dict[str, float]
 
+
     DEFAULT_PROFILE = DoctorProfile(
         name="Academic",
-        description="Fallback academic profile.",
+        background="Fallback academic profile.",
         raw_text="",
         weights={"theory": 0.7, "astrology": 0.15, "personality": 0.15, "medicalHistory": 0.0},
+        archetype="",
+        tone="",
+        personality_style="",
+        prompt_style="",
     )
     
     
@@ -875,9 +884,8 @@ class DreamJournalAnalyzer:
 
             print(f"profile_weights === === {final_weights}")
 
-
             # Doctor’s tone and description
-            doctor_intro = f"You are {profile.name}, a dream analyst.\n{profile.description}\n\n"
+            doctor_intro = f"You are a doctor with the profile type: {profile.name}. Your archetype is {profile.archetype}. Your tone is {profile.tone}. You are a dream analyst. \n{profile.background} \n{profile.prompt_style}\n\n"
 
             prompt = f"""
             {doctor_intro}
@@ -891,10 +899,11 @@ class DreamJournalAnalyzer:
             These are the primary dream symbols and entities already extracted:
             {dream_elements}
 
-            Here are some extracted passages that can help you make an informed analysis:
             These are your weights. Each category has a value that determines how much weight
             you give to that particular school of thought. 
             {final_weights}
+
+            It helps to learn about the dreamer before analyzing their dream.
 
             This is the dreamer's personality type:
             {settings.get("personality")}
@@ -912,10 +921,11 @@ class DreamJournalAnalyzer:
             
             Before answering, identify at least 3–7 key dream symbols or recurring elements found in the dream. 
             These should be specific nouns, places, people, or objects (for example: “island”, “storm”, “mirror”, “bird”, “bridge”). 
+            They can also include objects you think are important that may hold significance.
             If you already have extracted dream elements, merge them with any new ones you notice.
 
-
             Return ONLY valid JSON:
+
             {{
                 "mood": "one of the emotions above",
                 "summary": "brief summary",
@@ -938,7 +948,6 @@ class DreamJournalAnalyzer:
 
             mood_str = self.normalize_emotion(json_data["mood"])
             mood = EmotionType(mood_str)
-
 
             symbols_raw = json_data.get("symbols", [])
             if isinstance(symbols_raw, str):
@@ -1536,29 +1545,47 @@ class DreamJournalAnalyzer:
             # Parse weights
             weights = self._parse_weights_from_text(text)
             
-            # Parse name
-            nm = re.search(r"(?im)^Name\s*:\s*(.+)$", text, re.MULTILINE)
-            profile_name = nm.group(1).strip() if nm else name
+            # Helper function to extract section content
+            def extract_section(pattern: str, default: str = "") -> str:
+                match = re.search(pattern, text, re.DOTALL | re.IGNORECASE | re.MULTILINE)
+                return match.group(1).strip() if match else default
             
-            # Parse description (everything between "Background:" and "Weights:")
-            desc_match = re.search(r"Background:(.*?)(?=Weights:)", text, re.DOTALL | re.IGNORECASE)
-            description = desc_match.group(1).strip() if desc_match else "Dream analyst profile."
+            # Parse name
+            profile_name = extract_section(r"^Name\s*:\s*(.+)$", name)
+            
+            # Parse archetype
+            archetype = extract_section(r"^Archetype\s*:\s*(.+)$")
+            
+            # Parse tone
+            tone = extract_section(r"^Tone\s*:\s*(.+)$")
+            
+            # Parse background (everything between "Background:" and next section or "Personality Style:")
+            background = extract_section(r"Background:(.*?)(?=Personality Style:|Weights:|$)")
+            
+            # Parse personality style
+            personality_style = extract_section(r"Personality Style:(.*?)(?=Prompt Style:|Weights:|$)")
+            
+            # Parse prompt style
+            prompt_style = extract_section(r"Prompt Style:(.*?)(?=Weights:|$)")
             
             return self.DoctorProfile(
                 name=profile_name,
-                description=description,
+                archetype=archetype,
+                tone=tone,
+                background=background,
+                personality_style=personality_style,
+                prompt_style=prompt_style,
                 raw_text=text,
                 weights=weights
             )
             
         except FileNotFoundError:
-            print(f"⚠️ Profile file not found: {file_path}")
-            print(f"⚠️ Falling back to DEFAULT_PROFILE")
-            return self.DEFAULT_PROFILE
+            print(f"❌ Doctor profile not found: {file_path}")
+            raise
         except Exception as e:
-            print(f"❌ Error loading profile: {e}")
-            return self.DEFAULT_PROFILE
-
+            print(f"❌ Error loading doctor profile: {e}")
+            raise
+            
     async def _build_weighted_context(self, dream: str, weights: Dict[str, float], doctor_profile: DoctorProfile) -> str:
         """Build context that actually uses the weights to prioritize sources."""
         
