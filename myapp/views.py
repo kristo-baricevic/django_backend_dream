@@ -5,22 +5,37 @@ from django.views.decorators.http import require_http_methods
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from rest_framework.generics import ListAPIView
+from rest_framework.generics import ListAPIView, UpdateAPIView
 from rest_framework.pagination import PageNumberPagination
 from rest_framework import status
-from .models import Analysis, JournalEntry, CumulativeAnalysis, CustomQuestion, WorkflowExecution  # Add WorkflowExecution
-from .serializers import AnalysisSerializer, JournalEntrySerializer, CumulativeAnalysisSerializer, CustomQuestionSerializer
+from .models import Analysis, JournalEntry, CumulativeAnalysis, CustomQuestion, WorkflowExecution, Settings
+from .serializers import AnalysisSerializer, JournalEntrySerializer, CumulativeAnalysisSerializer, CustomQuestionSerializer, SettingsSerializer
 from rest_framework.permissions import AllowAny
 from django.db.models import Q
 from django.utils.dateparse import parse_date
+
+
+class SettingsListView(ListAPIView):
+    queryset = Settings.objects.all()
+    serializer_class = SettingsSerializer
+
+    def get_queryset(self):
+        # For demo, just return all settings or first one
+        return Settings.objects.all()
+
+
+class SettingsUpdateView(UpdateAPIView):
+    serializer_class = SettingsSerializer
+
+    def get_object(self):
+        # For demo, just update the first settings object
+        return Settings.objects.first()
 
 class JournalEntryPagination(PageNumberPagination):
     page_size = 3
     page_size_query_param = 'page_size'
     max_page_size = 100
     page_query_param = 'page'
-
-
 
 class JournalEntryListView(ListAPIView):
     serializer_class = JournalEntrySerializer

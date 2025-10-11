@@ -15,4 +15,6 @@ urlpatterns = [
     path('cumulative-analyses/', views.CumulativeAnalysisListView.as_view(), name='cumulative-analysis-list'),
     path('custom-questions/', views.CustomQuestionListView.as_view(), name='custom-question-list'),
     path('workflows/<uuid:workflow_id>/', get_workflow_execution, name='get_workflow_execution'),
+    path('settings/', views.SettingsListView.as_view(), name='settings-list'),
+    path('settings/update/', views.SettingsUpdateView.as_view(), name='settings-update'), 
 ]

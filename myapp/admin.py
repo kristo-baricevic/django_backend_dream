@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import User, JournalEntry, Analysis, CumulativeAnalysis, CustomQuestion
+from .models import User, JournalEntry, Analysis, CumulativeAnalysis, CustomQuestion, Settings
 
 class AnalysisInline(admin.StackedInline):
     model = Analysis
@@ -37,4 +37,6 @@ class CustomQuestionAdmin(admin.ModelAdmin):
     list_display = ['id', 'user', 'created_at', 'question', 'answer', 'doctor_personality', ]
     list_editable = ['doctor_personality']
 
-    
+@admin.register(Settings)
+class SettingsAdmin(admin.ModelAdmin):
+    pass

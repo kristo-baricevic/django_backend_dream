@@ -164,14 +164,34 @@ class CustomQuestion(models.Model):
     class Meta:
         indexes = [models.Index(fields=['user'])]
 
+def default_doctor_weights():
+    return {
+        "theory": 0.0,
+        "astrology": 0.0,
+        "personality": 0.0,
+        "medicalHistory": 0.0
+    }
+
+
+def default_settings_weights():
+    return {
+        "astrology": 0.15,
+        "personality": 0.15,
+        "medicalHistory": 0.10,
+        "theory": 0.70
+    }
+
+
 class DoctorProfile(models.Model):
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-
+    id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
     name = models.CharField(max_length=100, unique=True)
-    description = models.TextField(blank=True)
-    full_prompt = models.TextField(blank=True) 
-    weights = models.JSONField(default=dict)
-
+    archetype = models.CharField(max_length=100, blank=True)
+    tone = models.CharField(max_length=200, blank=True)
+    background = models.TextField(blank=True)
+    personality_style = models.TextField(blank=True)
+    prompt_style = models.TextField(blank=True)
+    full_prompt = models.TextField(blank=True)
+    weights = models.JSONField(default=default_doctor_weights)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -180,3 +200,25 @@ class DoctorProfile(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class Settings(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
+    user = models.ForeignKey('User', related_name='settings', on_delete=models.CASCADE, null=True, blank=True)
+    doctor = models.ForeignKey('DoctorProfile', related_name='settings', on_delete=models.SET_NULL, null=True, blank=True)
+    doctor_personality = models.TextField(blank=True, default='')
+    doctor_image = models.TextField(blank=True, default='')
+    personality_type = models.TextField(blank=True, default='')
+    occupation = models.TextField(blank=True, default='')
+    weights = models.JSONField(default=default_settings_weights)
+    doctor_influence = models.FloatField(default=0.7)
+    astrology = models.JSONField(default=dict)
+    medical_history = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [models.Index(fields=['user'])]
+
+    def __str__(self):
+        return f"Settings for {self.user}"

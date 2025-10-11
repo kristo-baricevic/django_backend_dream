@@ -662,7 +662,6 @@ class DreamJournalAnalyzer:
         # Otherwise return as-is
         return docs
 
-
     def assemble_knowledge_context(self, knowledge_docs: List[Document], max_tokens: int = 8000) -> str:
         """
         Assemble knowledge base context efficiently.
