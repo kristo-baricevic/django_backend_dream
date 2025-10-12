@@ -1141,6 +1141,8 @@ class DreamJournalAnalyzer:
                 input_data={"entry_count": len(entries)}
             )
 
+            print(f"entry count ==== {input_data}")
+
             docs = [
                 Document(
                     page_content=entry.content,
