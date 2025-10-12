@@ -1,7 +1,7 @@
 .env
 /env
 dream-fast-api/env
-env/
+git reset
 venv/
 *.pyc
 __pycache__/

@@ -237,8 +237,8 @@ class DreamKnowledgeBase:
             print("🔨 Building new vectorstore...")
             await self.build_knowledge_base()
     
-    def _should_rebuild(self) -> bool:  # ← ADD THIS METHOD
-        """Check if any files are newer than the existing index."""
+    def _should_rebuild(self) -> bool:
+        """Check if any files are newer than the existing index OR if files were deleted."""
         index_path = os.path.join(self.vector_directory, "index.faiss")
         
         if not os.path.exists(index_path):
@@ -246,13 +246,31 @@ class DreamKnowledgeBase:
         
         index_time = os.path.getmtime(index_path)
         
+        # Count current files
+        current_files = set()
         for root, dirs, files in os.walk(self.files_directory):
             for file in files:
                 if file.endswith(('.pdf', '.txt')):
                     file_path = os.path.join(root, file)
+                    current_files.add(file_path)
+                    
+                    # Check if modified
                     if os.path.getmtime(file_path) > index_time:
                         print(f"🆕 Detected newer file: {file}")
                         return True
+        
+        # Check if files were deleted by comparing count
+        # (You'd need to store file count in a metadata file for perfect detection)
+        if self.vectorstore:
+            try:
+                stored_count = len(self.vectorstore.docstore._dict)
+                # Rough estimate: each file creates ~5-10 chunks
+                expected_chunks = len(current_files) * 7  # Average
+                if abs(stored_count - expected_chunks) > len(current_files):  # Significant difference
+                    print(f"🗑️  Detected file count mismatch - rebuilding")
+                    return True
+            except:
+                pass
         
         return False
     
@@ -310,17 +328,24 @@ class DreamKnowledgeBase:
             print(f"Error building knowledge base: {e}")
     
     async def search_relevant_knowledge(self, query: str, k: int = 3) -> List[Document]:
-        """Search with minimal logging."""
+        """Search with diversity using MMR."""
         if not self.vectorstore:
             return []
         
-        results = self.vectorstore.similarity_search(query, k=k)
+        # Use MMR instead of similarity_search for diversity
+        results = self.vectorstore.max_marginal_relevance_search(
+            query, 
+            k=k,
+            fetch_k=k*3,  # Fetch more candidates, then diversify
+            lambda_mult=0.5  # Balance relevance (1.0) vs diversity (0.0)
+        )
         
-        # Log only summary, not full content!
         if results:
-            print(f"✅ Found {len(results)} documents from {len(set(d.metadata.get('source') for d in results))} sources")
+            sources = [d.metadata.get('source', 'unknown') for d in results]
+            print(f"✅ Found {len(results)} documents: {sources}")
         
         return results
+
 
 class DreamJournalAnalyzer:
     def __init__(self, openai_api_key: str):
@@ -454,188 +479,245 @@ class DreamJournalAnalyzer:
             return {"theory": 1.0, "astrology": 0.0, "personality": 0.0, "medicalHistory": 0.0}
         return {k: max(0.0, v) / s for k, v in weights.items()}
 
-    def _compute_final_weights(self,
-                            user_inf: Dict[str, float],
-                            doctor_w: Dict[str, float],
-                            doctor_influence: float) -> Dict[str, float]:
-        # Neutral baseline (your previous documented split, no medical):
+    def _compute_final_weights(self, user_inf, doctor_w, doctor_influence):
         base = {"theory": 0.70, "astrology": 0.15, "personality": 0.15, "medicalHistory": 0.0}
-
-        blended = {k: self._blend(base[k], doctor_w.get(k, 0.0), doctor_influence) for k in base.keys()}
-
-        # Apply user sliders as multiplicative factors
-        raw = {
-            "theory": blended["theory"] * max(0.0, 1.0),  # theory has no direct user slider; keep 1.0 or add if you want
-            "astrology": blended["astrology"] * max(0.0, user_inf.get("astrology", 0.15)),
-            "personality": blended["personality"] * max(0.0, user_inf.get("personality", 0.15)),
-            "medicalHistory": blended["medicalHistory"] * max(0.0, user_inf.get("medicalHistory", 0.10)),
+        
+        # User preferences (from sliders)
+        user_preferences = {
+            "theory": 1.0,  # No user slider for theory
+            "astrology": user_inf.get("astrology", 0.15),
+            "personality": user_inf.get("personality", 0.15),
+            "medicalHistory": user_inf.get("medicalHistory", 0.10),
         }
 
-        return self._normalize_weights(raw)
+        print(f"user preferences ==== {user_preferences}")
+        print(f"doctor_w ==== {doctor_w}")
+
+        # Blend: doctor_influence controls doctor vs user preferences
+        blended = {}
+        for k in base.keys():
+            # Blend between user preference and doctor weight
+            user_adjusted_base = base[k] * user_preferences[k]
+            blended[k] = self._blend(user_adjusted_base, doctor_w.get(k, 0.0), doctor_influence)
+        
+        return self._normalize_weights(blended)
 
 
     async def assemble_full_context(self, dream_theory_docs: List[Document], settings: Dict[str, Any] = None, weights: Optional[Dict[str, float]] = None) -> str:
-        print("\n=== ASSEMBLING FULL CONTEXT (RAG Doctor + Weights) ===")
-
-        settings = settings or {}
-        doctor_name = settings.get("doctorPersonality", "Academic")
-        user_inf = settings.get("influence", {})
-        doctor_influence = float(user_inf.get("doctor", 0.7))  # 0..1
-
-        # 1) RAG: fetch doctor profile (rich text + weights)
-        profile = await self._get_doctor_profile(doctor_name)
-        final_w = self._compute_final_weights(user_inf, profile.weights, doctor_influence)
-
-        print(f"🩺 Doctor: {profile.name} | weights(raw)={profile.weights} | user={user_inf} | doctorInfluence={doctor_influence}")
-        print(f"🎚 Final normalized weights => {final_w}")
-
-        # 2) DREAM THEORY (weighted by final_w['theory'])
-        dream_context = ""
+        """Assemble full context WITHOUT truncation - use complete documents"""
+        print("\n=== ASSEMBLING FULL CONTEXT ===")
+        
+        # Build context sections with full content
+        context_parts = []
+        
+        # Dream theory docs
         if dream_theory_docs:
-            dream_context = "\n\n=== DREAM INTERPRETATION THEORY (Primary) ===\n"
+            theory_context = "\n\n=== DREAM INTERPRETATION THEORY ===\n"
             for i, doc in enumerate(dream_theory_docs, 1):
-                snippet = doc.page_content.replace("{", "{{").replace("}", "}}")
-                snippet = self._take_fraction(snippet, final_w["theory"])
-                if not snippet: break
-                dream_context += f"\n[Reference {i}]\n{snippet}\n"
+                source = doc.metadata.get('source', 'Unknown')
+                content = doc.page_content.replace("{", "{{").replace("}", "}}")
+                theory_context += f"\n[Source {i}: {source}]\n{content}\n"
+            context_parts.append(theory_context)
+        
+        # Add weighting instruction at the top
+        weight_instruction = f"""
+    CONTEXT WEIGHTING:
+    When analyzing, weight these sources as follows:
+    - Dream Theory: {weights.get('theory', 0.7)*100:.0f}% (PRIMARY - most important)
+    - Astrology: {weights.get('astrology', 0.15)*100:.0f}%
+    - Personality: {weights.get('personality', 0.15)*100:.0f}%
+    - Medical History: {weights.get('medicalHistory', 0.0)*100:.0f}%
 
-        # 3) ASTROLOGY (weighted)
-        astrology_context = ""
-        if settings.get("astrology"):
-            astro = settings["astrology"]
-            astro_text = self.astrology_kb.get_full_chart_context(
-                sun=astro.get("sun"), moon=astro.get("moon"), rising=astro.get("rising")
-            )
-            if astro_text:
-                astro_text = self._take_fraction(astro_text, final_w["astrology"])
-                if astro_text:
-                    astrology_context = f"\n\n=== ASTROLOGICAL PROFILE === (w={final_w['astrology']:.2f})\n{astro_text}\n"
-
-        # 4) PERSONALITY (MBTI) (weighted)
-        personality_context = ""
-        if settings.get("personality"):
-            ptxt = self.personality_kb.get_personality_context(settings["personality"])
-            if ptxt:
-                ptxt = self._take_fraction(ptxt, final_w["personality"])
-                if ptxt:
-                    personality_context = f"\n\n=== PERSONALITY PROFILE === (w={final_w['personality']:.2f})\n{ptxt}\n"
-
-        # 5) MEDICAL HISTORY (weighted)
-        medical_context = self._build_medical_context(settings)
-        if medical_context:
-            medical_context = self._take_fraction(medical_context, final_w["medicalHistory"])
-
-        # 6) DOCTOR VOICE (full, un-truncated guidance at the end)
-        doctor_voice = f"\n\n=== DOCTOR VOICE ===\n{profile.raw_text}\n"
-
-        full = dream_context + astrology_context + personality_context + (("\n\n" + medical_context) if medical_context else "") + doctor_voice
-
-        print(f"📊 Assembled context lengths — "
-            f"dream:{len(dream_context)} astro:{len(astrology_context)} "
-            f"pers:{len(personality_context)} med:{len(medical_context)} "
-            f"voice:{len(doctor_voice)} total:{len(full)}")
+    Prioritize dream theory heavily. Use personality and astrology as supporting context to understand the dreamer's psychological makeup.
+    """
+        
+        full = weight_instruction + "\n".join(context_parts)
+        
+        print(f"📊 Assembled context: {len(full)} characters")
         print("=== END CONTEXT ASSEMBLY ===\n")
         return full
-
+        
     async def comprehensive_knowledge_retrieval(
         self, 
-        entries: List[JournalEntry], 
-        k: int = 20,
+        entries: List[JournalEntry],
+        settings: Dict = None,
+        k: int = 5,
         total_k: int = 20
-    ) -> List[Document]:
-        """
-        Multi-query retrieval using structured dream elements.
-        """
-        print(f"\n=== DIVERSE KNOWLEDGE RETRIEVAL ===")
+    ) -> Dict:
+        """Search with MANDATORY user profile files."""
+        print(f"\n=== KNOWLEDGE RETRIEVAL ===")
         
-        dream_elements = await self.symbol_extractor.extract_dream_elements(entries)
-        print(f"\n=== DREAM ELEMENTS === {dream_elements}")
-
-        # Build diverse, focused queries from structured data
-        queries = self._build_queries_from_elements(dream_elements)
-        print(f"\n=== QUERIES === {queries}")
-
+        # Extract user's profile
+        user_personality = settings.get('personality', '').upper() if settings else None
+        user_astrology = settings.get('astrology', {}) if settings else {}
+        user_sun = user_astrology.get('sun', '').lower()
+        user_moon = user_astrology.get('moon', '').lower()
+        user_rising = user_astrology.get('rising', '').lower()
+        
+        print(f"User Profile: {user_personality}, Sun:{user_sun}, Moon:{user_moon}, Rising:{user_rising}")
+        
         all_docs = []
         seen_content = set()
-        source_counts = {}
+        
+        # Initialize direct file loaders
+        personality_kb = PersonalityKnowledgeBase()
+        astrology_kb = AstrologyKnowledgeBase()
+        
+        # FORCE-ADD personality file
+        if user_personality:
+            content = personality_kb.get_personality_context(user_personality)
+            if content:
+                doc = Document(
+                    page_content=content,
+                    metadata={"source": f"knowledge_base/personality/{user_personality}.txt", "file_type": "personality"}
+                )
+                all_docs.append(doc)
+                print(f"  🎯 Added: personality/{user_personality}.txt")
+        
+        # FORCE-ADD astrology files
+        if user_sun:
+            content = astrology_kb.get_sign_context(user_sun, "sun")
+            if content:
+                doc = Document(
+                    page_content=content,
+                    metadata={"source": f"knowledge_base/astrology/sun_signs/{user_sun}.txt", "file_type": "astrology"}
+                )
+                all_docs.append(doc)
+                print(f"  🎯 Added: sun_signs/{user_sun}.txt")
+        
+        if user_moon:
+            content = astrology_kb.get_sign_context(user_moon, "moon")
+            if content:
+                doc = Document(
+                    page_content=content,
+                    metadata={"source": f"knowledge_base/astrology/moon_signs/{user_moon}.txt", "file_type": "astrology"}
+                )
+                all_docs.append(doc)
+                print(f"  🎯 Added: moon_signs/{user_moon}.txt")
+        
+        if user_rising:
+            content = astrology_kb.get_sign_context(user_rising, "rising")
+            if content:
+                doc = Document(
+                    page_content=content,
+                    metadata={"source": f"knowledge_base/astrology/rising_signs/{user_rising}.txt", "file_type": "astrology"}
+                )
+                all_docs.append(doc)
+                print(f"  🎯 Added: rising_signs/{user_rising}.txt")
+        
+        # Now do normal dream-based retrieval for remaining slots
+        dream_elements = await self.symbol_extractor.extract_dream_elements(entries)
+        queries = self._build_queries_from_elements(dream_elements)
         
         for query in queries:
-            print(f"  Querying: {query[:60]}...")
-            
+            if len(all_docs) >= total_k:
+                break
+                
             docs = await self.knowledge_base.search_relevant_knowledge(query, k=k)
             
             for doc in docs:
-                # Deduplicate by content hash
+                source = doc.metadata.get('source', '')
+                
+                # Skip wrong personality/astrology files
+                if 'personality/' in source and user_personality and user_personality not in source:
+                    continue
+                if 'astrology/' in source:
+                    source_lower = source.lower()
+                    user_signs = [user_sun, user_moon, user_rising]
+                    if not any(sign in source_lower for sign in user_signs if sign):
+                        continue
+                
                 content_hash = hash(doc.page_content[:200])
-                source = doc.metadata.get('source', 'unknown')
-                
-                if content_hash in seen_content:
-                    continue
-                if source_counts.get(source, 0) >= 3:
-                    continue
-                
-                seen_content.add(content_hash)
-                source_counts[source] = source_counts.get(source, 0) + 1
-                all_docs.append(doc)
-                
+                if content_hash not in seen_content:
+                    # Check if actually useful for interpretation
+                    if not self._is_relevant_interpretation_content(doc):
+                        # print(f"    ⏭️  SKIPPED (narrative only): {source[:50]}")
+                        continue
+                    
+                    seen_content.add(content_hash)
+                    all_docs.append(doc)
+                    
+                    # Log why this was retrieved
+                    preview = doc.page_content[:150].replace('\n', ' ')
+                    print(f"    ✅ MATCHED by '{query[:40]}...': {source[:50]}")
+                    print(f"       Preview: {preview}...")
+                    
                 if len(all_docs) >= total_k:
                     break
-            
-            if len(all_docs) >= total_k:
-                break
         
-        print(f"✅ Retrieved {len(all_docs)} passages from {len(source_counts)} sources")
-        print(f"   Source distribution: {source_counts}")
-        print(f"Total docs in vectorstore: {len(self.knowledge_base.vectorstore.docstore._dict)}")
-        print(f"Sources: {set(doc.metadata.get('source') for doc in self.knowledge_base.vectorstore.docstore._dict.values())}")
-
-        print(f"=== END RETRIEVAL ===\n")
+        print(f"✅ Retrieved {len(all_docs)} total documents")
         
         return {
             "dream_elements": dream_elements,
             "docs": all_docs
         }
 
+    def _is_relevant_interpretation_content(self, doc: Document) -> bool:
+        """Filter out narrative-only content, keep interpretive content"""
+        content_lower = doc.page_content.lower()
+        
+        # Must contain interpretation keywords
+        interpretation_keywords = [
+            'symbolism', 'represents', 'meaning', 'interpretation', 'signifies',
+            'psychological', 'archetype', 'unconscious', 'reflects', 'indicates',
+            'suggests', 'dream analysis', 'theory', 'framework'
+        ]
+        
+        # Exclude pure narrative
+        narrative_only = [
+            'i was', 'i saw', 'i went', 'we started', 'he said', 'she said'
+        ]
+        
+        has_interpretation = any(kw in content_lower for kw in interpretation_keywords)
+        is_just_narrative = content_lower.count('i was') > 2 or content_lower.count('we ') > 3
+        
+        return has_interpretation and not is_just_narrative
 
-
+    
     def _build_queries_from_elements(self, dream_elements: dict) -> List[str]:
         """
         Build targeted queries from structured dream elements.
         """
         queries = []
         
-        # 1. Symbol-based queries (primary_symbols)
+        # 1. Emotional context phrases from actual dreams (NEW)
+        emotions = dream_elements.get('emotions', [])
+        for emotion_data in emotions[:5]:
+            context = emotion_data.get('context', '').strip()
+            if len(context) > 20:
+                queries.append(context)
+        
+        # 2. Symbol-based queries (primary_symbols)
         symbols = dream_elements.get('primary_symbols', [])[:3]  # Top 3
         for symbol in symbols:
             if symbol and len(symbol) > 2:  # Skip very short/generic words
                 queries.append(f"{symbol} symbolism dreams Jungian interpretation")
                 queries.append(f"what does {symbol} represent in dream analysis")
         
-        # 2. Key phrase queries (more specific than single symbols)
+        # 3. Key phrase queries (more specific than single symbols)
         phrases = dream_elements.get('key_phrases', [])[:3]
         for phrase in phrases:
             if phrase and len(phrase) > 5:
                 queries.append(f"{phrase} dream meaning psychological significance")
         
-        # 3. Emotion-based queries
-        emotions = dream_elements.get('emotions', [])
+        # 4. Emotion-based queries
         unique_emotions = list(set(e['emotion'] for e in emotions))[:2]  # Top 2 unique
         for emotion in unique_emotions:
             queries.append(f"{emotion} in dreams emotional processing theory")
         
-        # 4. Action-based queries
+        # 5. Action-based queries
         actions = dream_elements.get('actions', [])[:2]
         for action in actions:
             if action and len(action) > 3:
                 queries.append(f"{action} action dreams behavioral symbolism")
         
-        # 5. Entity/location queries
+        # 6. Entity/location queries
         entities = dream_elements.get('entities', [])
         locations = [e[0] for e in entities if e[1] == 'LOC'][:2]
         for loc in locations:
             queries.append(f"{loc} setting dreams environmental symbolism")
         
-        # 6. Thematic/general queries (as fallback)
+        # 7. Thematic/general queries (as fallback)
         queries.extend([
             "recurring dream patterns archetypal meaning",
             "dream emotions unconscious mind processing",
@@ -650,8 +732,8 @@ class DreamJournalAnalyzer:
                 seen.add(q.lower())
                 unique_queries.append(q)
         
-        return unique_queries[:8]  # Return top 8 diverse queries
-
+        return unique_queries[:15]  # Increased limit since we have context
+        
     async def apply_mmr_reranking(self, docs: List[Document], query: str, lambda_mult: float = 0.5) -> List[Document]:
         """
         Maximal Marginal Relevance re-ranking to get diverse but relevant results.
@@ -751,71 +833,92 @@ class DreamJournalAnalyzer:
         return "\n\n".join(context_parts)
 
 
-    def validate_analysis_quality(self, analysis: str, knowledge_docs: List[Document]) -> Dict[str, Any]:
+    def validate_analysis_quality(self, analysis: str, knowledge_docs: List[Document], settings: Dict = None) -> Dict[str, Any]:
         """
-        Validate that the analysis actually uses the knowledge base.
-        Returns metrics about knowledge base usage.
+        Validate that the analysis actually uses user-specific context and follows instructions.
         """
         print(f"\n=== VALIDATING ANALYSIS QUALITY ===")
         
-        # Extract key theoretical concepts from knowledge base
-        kb_concepts = set()
         analysis_lower = analysis.lower()
-        
-        # Look for specific theoretical frameworks present in your knowledge base
-        theoretical_terms = [
-            "subjective dreams", "physical dreams", "spiritual dreams",
-            "astral experience", "subjective intelligence", 
-            "animal mind", "spiritual mind", "soul",
-            "subjective plane", "warning", "prophecy",
-            "allegory", "symbols", "telepathic",
-            "mental transmissions", "psychic currents"
-        ]
-        
-        concepts_used = [term for term in theoretical_terms if term in analysis_lower]
-        
-        # Check for forbidden terms (LLM using its own training instead of KB)
-        forbidden_terms = [
-            "jungian", "jung", "freud", "freudian", 
-            "collective unconscious", "shadow self", "anima", "animus",
-            "ego", "id", "superego"  # Unless these appear in your KB
-        ]
-        forbidden_found = [term for term in forbidden_terms if term in analysis_lower]
-        
-        # Check for unwanted citation language
-        citation_language = [
-            "quote 1", "quote 2", "quote 3", "quote 4",
-            "the knowledge base", "according to the theory",
-            "the text states"
-        ]
-        citations_visible = [phrase for phrase in citation_language if phrase in analysis_lower]
-        
         metrics = {
-            "theoretical_concepts_used": concepts_used,
-            "forbidden_terms_found": forbidden_found,
-            "visible_citations": citations_visible,
-            "quality_score": len(concepts_used) - len(forbidden_found) - len(citations_visible)
+            "used_personality": False,
+            "used_astrology": False,
+            "avoided_dream_by_dream": True,
+            "has_depth": False,
+            "quality_score": 0
         }
         
-        print(f"📊 Analysis Validation Results:")
-        print(f"   ✓ Theoretical concepts used: {len(concepts_used)}")
-        if concepts_used:
-            print(f"      {concepts_used}")
+        # 1. Check if user's personality type was referenced
+        if settings and settings.get('personality'):
+            personality = settings['personality'].upper()
+            personality_terms = [personality.lower(), 'intj', 'architect', 'strategic', 'analytical']
+            if any(term in analysis_lower for term in personality_terms):
+                metrics["used_personality"] = True
+                metrics["quality_score"] += 2
+                print(f"   ✅ Personality type ({personality}) referenced in analysis")
+            else:
+                print(f"   ⚠️  Personality type ({personality}) NOT used")
         
-        if forbidden_found:
-            print(f"   ⚠️  Forbidden terms (using LLM training): {forbidden_found}")
+        # 2. Check if astrology signs were referenced
+        if settings and settings.get('astrology'):
+            astro = settings['astrology']
+            signs = [astro.get('sun', '').lower(), astro.get('moon', '').lower(), astro.get('rising', '').lower()]
+            signs = [s for s in signs if s]  # Remove empty
+            
+            signs_mentioned = sum(1 for sign in signs if sign in analysis_lower)
+            if signs_mentioned > 0:
+                metrics["used_astrology"] = True
+                metrics["quality_score"] += signs_mentioned
+                print(f"   ✅ Astrology signs used: {signs_mentioned}/{len(signs)}")
+            else:
+                print(f"   ⚠️  Astrology signs ({signs}) NOT used")
         
-        if citations_visible:
-            print(f"   ⚠️  Visible citation artifacts: {citations_visible}")
+        # 3. Check for dream-by-dream structure (BAD)
+        dream_by_dream_phrases = [
+            "the first dream", "the second dream", "the third dream",
+            "in one dream", "another dream", "the next dream",
+            "1.", "2.", "3.", "4."  # Numbered lists
+        ]
+        found_sequential = [phrase for phrase in dream_by_dream_phrases if phrase in analysis_lower]
+        if found_sequential:
+            metrics["avoided_dream_by_dream"] = False
+            metrics["quality_score"] -= 3
+            print(f"   ❌ Dream-by-dream structure detected: {found_sequential[:3]}")
+        else:
+            metrics["quality_score"] += 2
+            print(f"   ✅ Holistic analysis (no dream-by-dream structure)")
         
-        print(f"   📈 Quality score: {metrics['quality_score']}")
+        # 4. Check for depth (mentions psychological themes, not just descriptions)
+        depth_indicators = [
+            'unconscious', 'psyche', 'psychological', 'inner', 'shadow',
+            'transformation', 'pattern', 'theme', 'conflict', 'tension',
+            'reveals', 'suggests', 'reflects', 'indicates'
+        ]
+        depth_count = sum(1 for term in depth_indicators if term in analysis_lower)
+        if depth_count >= 5:
+            metrics["has_depth"] = True
+            metrics["quality_score"] += 2
+            print(f"   ✅ Analysis has depth ({depth_count} psychological terms)")
+        else:
+            print(f"   ⚠️  Analysis may be superficial ({depth_count} psychological terms)")
         
-        if len(concepts_used) < 2:
-            print(f"   ⚠️  WARNING: Analysis may not be using knowledge base theories!")
-        if forbidden_found:
-            print(f"   ⚠️  WARNING: Analysis using LLM training instead of knowledge base!")
-        if citations_visible:
-            print(f"   ⚠️  WARNING: Citation scaffolding visible in output!")
+        # 5. Check length (should be substantial)
+        word_count = len(analysis.split())
+        if word_count < 200:
+            metrics["quality_score"] -= 2
+            print(f"   ⚠️  Analysis too short ({word_count} words)")
+        elif word_count > 400:
+            metrics["quality_score"] += 1
+            print(f"   ✅ Analysis substantial ({word_count} words)")
+        
+        print(f"   📈 Overall Quality Score: {metrics['quality_score']}/10")
+        
+        if metrics["quality_score"] < 3:
+            print(f"   ❌ POOR QUALITY: Analysis not using user context or following instructions")
+        elif metrics["quality_score"] < 6:
+            print(f"   ⚠️  MODERATE QUALITY: Some issues with context usage")
+        else:
+            print(f"   ✅ GOOD QUALITY: Analysis properly using user context")
         
         print(f"=== END VALIDATION ===\n")
         
@@ -1104,11 +1207,16 @@ class DreamJournalAnalyzer:
             # Only import if you actually created this model. If not, keep the except.
             from myapp.models import DoctorProfile as DoctorProfileModel  # JSONField 'weights' expected
             doctor_name = (settings or {}).get("doctorPersonality", "Academic")
+            print(f"settings {settings}")
+            print(f"doctor_name {doctor_name}")
+
+            # Try database first
             doctor_profile = await sync_to_async(
                 DoctorProfileModel.objects.filter(name__iexact=doctor_name).first
             )()
+
             if doctor_profile:
-                # Ensure it has the shape we need
+                # Use database profile
                 profile = type("TmpProfile", (), {})()
                 profile.name = doctor_profile.name or "Doctor"
                 profile.background = doctor_profile.background or ""
@@ -1116,6 +1224,12 @@ class DreamJournalAnalyzer:
                 profile.weights = doctor_profile.weights or {
                     "theory": 0.7, "astrology": 0.15, "personality": 0.15, "medicalHistory": 0.0
                 }
+                print(f"✅ Loaded from DB: {profile.name}")
+            else:
+                # ✅ Fallback to file
+                print(f"⚠️  Not in DB, loading from file...")
+                profile = await self._get_doctor_profile(doctor_name)
+                print(f"✅ Loaded from file: {profile.name} with weights {profile.weights}")
         except Exception:
             pass
 
@@ -1124,6 +1238,7 @@ class DreamJournalAnalyzer:
 
         user_inf = (settings or {}).get("influence", {})
         doctor_influence = float((settings or {}).get("doctor_influence", 0.5))
+        print(f"doctor profile {profile.weights}")
 
         final_weights = self._compute_final_weights(
             user_inf=user_inf,
@@ -1140,8 +1255,6 @@ class DreamJournalAnalyzer:
                 step_type="vectorstore_creation",
                 input_data={"entry_count": len(entries)}
             )
-
-            print(f"entry count ==== {input_data}")
 
             docs = [
                 Document(
@@ -1164,18 +1277,18 @@ class DreamJournalAnalyzer:
                 step_type="knowledge_retrieval"
             )
 
-            result = await self.comprehensive_knowledge_retrieval(entries, k=20)
+            result = await self.comprehensive_knowledge_retrieval(entries, settings, k=20)
             dream_elements = result["dream_elements"]
             knowledge_docs = result["docs"]
 
             citations = [
                 {
-                    'source': 'dream_science_papers',
+                    'source': doc.metadata.get('source', 'unknown_source')[:50],
                     'content': doc.page_content[:200],
-                    'confidence': 0.85,
-                    'reference': doc.metadata.get('source', 'Unknown')
+                    'confidence': doc.metadata.get('confidence', 0.85),
+                    'reference': str(doc.metadata.get('reference', doc.metadata.get('source', 'Unknown')))[:50]
                 }
-                for doc in knowledge_docs[:5]
+                for doc in knowledge_docs
             ]
 
             await step2.complete(
@@ -1254,7 +1367,10 @@ class DreamJournalAnalyzer:
             )
 
             synthesis_prompt = f"""You are {profile.name}, a dream analyst.
+            Try to be really embody this background:
             {profile.background}
+
+            CRITICAL: You must analyze these dreams as ONE UNIFIED PSYCHOLOGICAL NARRATIVE, not individual dreams.
 
             WEIGHTED CONTEXT (based on doctor & user influence):
             {full_context}
@@ -1265,6 +1381,35 @@ class DreamJournalAnalyzer:
             {user_context if user_context else ''}
 
             Dream entries: {{context}}
+
+            ANALYSIS INSTRUCTIONS:
+            Your task is to provide a cohesive, holistic interpretation of these dreams as a unified psychological narrative. 
+
+            DO NOT:
+            - List dreams individually or number them
+            - Simply describe what happened in each dream
+            - Use bullet points or numbered lists
+            - Give surface-level observations
+            - Use the phrase "the dreamer" when referring to the user.
+
+            DO:
+            - Address the dreamer directly. Use you/your/yours pronouns.
+            - Identify recurring symbols, emotions, and themes that appear across multiple dreams
+            - Weave these patterns into a coherent psychological narrative
+            - Go deep - explore what these patterns reveal about the dreamer's unconscious mind
+            - Write in flowing prose with natural paragraphs, as if speaking to the dreamer directly
+            - Connect the dreams together to tell a story about what the psyche is processing
+            - Draw on the theoretical frameworks and the dreamer's personality/astrological profile
+            - Be specific and insightful, not generic
+            - Weave in one brief, relevant quote from the theoretical sources that particularly illuminates your interpretation. Integrate it naturally into your prose without formal citation format - let it flow as part of your narrative voice.
+
+
+            Example structure:
+            - Paragraph 1: The dominant psychological pattern/conflict
+            - Paragraph 2: How this manifests symbolically across the dreams  
+            - Paragraph 3: What this reveals about the dreamer's current psychological state
+            - Paragraph 4: The unconscious message or invitation for growth
+
 
             Analysis:"""
 
@@ -1291,7 +1436,7 @@ class DreamJournalAnalyzer:
                 step_type="validation"
             )
 
-            validation_metrics = self.validate_analysis_quality(result, knowledge_docs)
+            validation_metrics = self.validate_analysis_quality(result, knowledge_docs, settings)
 
             await step6.complete(
                 output=validation_metrics,
@@ -1400,7 +1545,7 @@ class DreamJournalAnalyzer:
                 step_type="knowledge_search"
             )
 
-            result = await self.comprehensive_knowledge_retrieval(entries, k=20)
+            result = await self.comprehensive_knowledge_retrieval(entries, settings, k=20)
             dream_elements = result["dream_elements"]
             dream_theory_docs = result["docs"]
 
