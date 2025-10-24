@@ -1,4 +1,3 @@
-# docker-compose.yml (goes in django_backend_dream/docker-compose.yml)
 version: '3.8'
 
 services:
@@ -18,7 +17,9 @@ services:
     restart: unless-stopped
 
   fastapi:
-    build: ./dream-fast-api
+    build:
+      context: ./dream-fast-api
+      dockerfile: Dockerfile
     container_name: dream_fastapi
     ports:
       - "8001:8001"
@@ -29,7 +30,20 @@ services:
       - ./dream-fast-api:/app
       - .:/django_backend_dream
     restart: unless-stopped
-    
+
+  chatbot:
+    build: ./dream-analyzer-chatbot
+    container_name: dream_chatbot
+    ports:
+      - "8002:8002"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - DATABASE_URL=postgresql+psycopg2://dreamuser:dreampass@db:5432/dreamdb
+    volumes:
+      - ./dream-analyzer-chatbot:/app
+      - .:/django_backend_dream
+    restart: unless-stopped
+
   db:
     image: postgres:15-alpine
     container_name: dream_postgres
@@ -57,8 +71,10 @@ services:
     depends_on:
       - django
       - fastapi
+      - chatbot
+    networks:
+      - default
     restart: unless-stopped
-
 
 volumes:
   static_volume:
