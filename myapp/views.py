@@ -76,18 +76,14 @@ class JournalEntryListView(ListAPIView):
 
 class MoodListView(ListAPIView):
     def get(self, request):
-        if request.user.is_authenticated:
-            qs = Analysis.objects.filter(user=request.user)
-        else:
-            qs = Analysis.objects.all()
-        
+        qs = Analysis.objects.all()
         moods = list(
             qs.values('mood', 'color')
             .order_by('mood', 'color')
             .distinct('mood', 'color')
         )
-        
         return Response({'moods': moods})
+
 
 class CumulativeAnalysisPagination(PageNumberPagination):
     page_size = 10
