@@ -9,6 +9,14 @@ from app.agents.dream_agent import dream_agent
 
 router = APIRouter()
 
+@router.options("/chat/message")
+async def chat_message_options():
+    return {}
+    
+@router.options("/chat/message/stream")
+async def chat_message_stream_options():
+    return {}
+
 @router.post("/chat/message", response_model=ChatResponse)
 async def send_message(request: ChatRequest):
     """
