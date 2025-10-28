@@ -110,7 +110,7 @@ WSGI_APPLICATION = 'mysite.wsgi.application'
 #         'NAME': 'dreamdb',
 #         'USER': 'dreamuser',
 #         'PASSWORD': 'password123',
-#         'HOST': 'host.docker.internal'         
+#         'HOST': 'host.docker.internal',
 #         'PORT': '5432',
 #     }
 # }
@@ -126,8 +126,6 @@ DATABASES = {
         'PORT': '5432',
     }
 }
-
-
 
 # Password validation
 # https://docs.djangoproject.com/en/4.2/ref/settings/#auth-password-validators
