@@ -9,7 +9,7 @@ from app.agents.dream_agent import dream_agent
 
 router = APIRouter()
 
-@router.post("/message", response_model=ChatResponse)
+@router.post("/chat/message", response_model=ChatResponse)
 async def send_message(request: ChatRequest):
     """
     Send a message and get a response (non-streaming)
@@ -27,7 +27,7 @@ async def send_message(request: ChatRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/message/stream")
+@router.post("/chat/message/stream")
 async def send_message_stream(request: ChatRequest):
     """
     Send a message and get a streaming response
@@ -54,7 +54,7 @@ async def send_message_stream(request: ChatRequest):
         }
     )
 
-@router.websocket("/ws")
+@router.websocket("/chat/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """
     WebSocket endpoint for real-time chat
