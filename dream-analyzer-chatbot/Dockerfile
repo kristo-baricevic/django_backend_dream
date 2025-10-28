@@ -24,7 +24,7 @@ RUN pip install --upgrade pip setuptools wheel
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy project files
-COPY . .
+COPY app ./app
 
 # Expose FastAPI port
 EXPOSE 8002

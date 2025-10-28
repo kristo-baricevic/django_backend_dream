@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.routes import chat
-from app.config import settings
+from config import settings
 
 app = FastAPI(
     title="Dream Analyzer Chatbot",
