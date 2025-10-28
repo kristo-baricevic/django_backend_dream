@@ -14,6 +14,8 @@ services:
       - .:/app
     depends_on:
       - db
+    networks:
+      - default
     restart: unless-stopped
 
   fastapi:
@@ -29,6 +31,8 @@ services:
     volumes:
       - ./dream-fast-api:/app
       - .:/django_backend_dream
+    networks:
+      - default
     restart: unless-stopped
 
   chatbot:
@@ -42,6 +46,8 @@ services:
     volumes:
       - ./dream-analyzer-chatbot:/app
       - .:/django_backend_dream
+    networks:
+      - default
     restart: unless-stopped
 
   db:
@@ -55,6 +61,8 @@ services:
       - postgres_data:/var/lib/postgresql/data
     ports:
       - "127.0.0.1:5432:5432"
+    networks:
+      - default
     restart: unless-stopped
 
   nginx:
@@ -79,3 +87,6 @@ services:
 volumes:
   static_volume:
   postgres_data:
+
+networks:
+  default:
