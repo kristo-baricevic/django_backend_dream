@@ -27,10 +27,15 @@ class SettingsUpdateView(UpdateAPIView):
     serializer_class = SettingsSerializer
 
     def get_object(self):
-        # For demo, just update the first settings object
-        return Settings.objects.first()
+        # Get or create a default settings object
+        settings, created = Settings.objects.get_or_create(
+            id=1, 
+            defaults={
+                'doctor_personality': 'Academic',
+            }
+        )
+        return settings
     
-    # Add this method to handle POST requests
     def post(self, request, *args, **kwargs):
         return self.update(request, *args, **kwargs)
 
