@@ -25,19 +25,17 @@ class SettingsListView(ListAPIView):
 
 class SettingsUpdateView(UpdateAPIView):
     serializer_class = SettingsSerializer
-
+    
     def get_object(self):
-        # Get or create a default settings object
-        settings, created = Settings.objects.get_or_create(
-            id=1, 
-            defaults={
-                'doctor_personality': 'Academic',
-            }
-        )
+        settings, created = Settings.objects.get_or_create(pk=1)
         return settings
     
     def post(self, request, *args, **kwargs):
         return self.update(request, *args, **kwargs)
+    
+    def update(self, request, *args, **kwargs):
+        kwargs['partial'] = True  # This makes all fields optional
+        return super().update(request, *args, **kwargs)
 
 class JournalEntryPagination(PageNumberPagination):
     page_size = 3
