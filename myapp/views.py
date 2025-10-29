@@ -23,13 +23,16 @@ class SettingsListView(ListAPIView):
         # For demo, just return all settings or first one
         return Settings.objects.all()
 
-
 class SettingsUpdateView(UpdateAPIView):
     serializer_class = SettingsSerializer
 
     def get_object(self):
         # For demo, just update the first settings object
         return Settings.objects.first()
+    
+    # Add this method to handle POST requests
+    def post(self, request, *args, **kwargs):
+        return self.update(request, *args, **kwargs)
 
 class JournalEntryPagination(PageNumberPagination):
     page_size = 3
