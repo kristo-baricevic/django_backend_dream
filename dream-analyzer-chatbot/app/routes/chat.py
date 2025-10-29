@@ -9,13 +9,52 @@ from app.agents.dream_agent import dream_agent
 
 router = APIRouter()
 
+# NO MORE OPTIONS HANDLERS - deleted correctly
+
 @router.post("/message", response_model=ChatResponse)
 async def send_message(request: ChatRequest):
-    # ... rest of your code ...
+    """
+    Send a message and get a response (non-streaming)
+    """
+    try:
+        response_text = await dream_agent.process_message(
+            user_message=request.message,
+            conversation_history=request.conversation_history or []
+        )
+        
+        return ChatResponse(
+            message=response_text,
+            timestamp=datetime.now()
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/message/stream")
 async def send_message_stream(request: ChatRequest):
-    # ... rest of your code ...
+    """
+    Send a message and get a streaming response
+    """
+    async def generate():
+        try:
+            async for chunk in dream_agent.stream_response(
+                user_message=request.message,
+                conversation_history=request.conversation_history or []
+            ):
+                yield f"data: {json.dumps({'content': chunk, 'done': False})}\n\n"
+            
+            # Send completion signal
+            yield f"data: {json.dumps({'content': '', 'done': True})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+    
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        }
+    )
 
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
