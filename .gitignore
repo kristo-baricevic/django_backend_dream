@@ -5,3 +5,4 @@ git reset
 venv/
 *.pyc
 __pycache__/
+creds.txt
