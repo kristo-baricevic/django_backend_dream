@@ -222,3 +222,48 @@ class Settings(models.Model):
 
     def __str__(self):
         return f"Settings for {self.user}"
+
+class AnalysisFeedback(models.Model):
+    """Track user feedback on analysis quality"""
+    FEEDBACK_CHOICES = [
+        ('good', 'Good'),
+        ('bad', 'Bad'),
+        ('helpful', 'Helpful'),
+        ('unhelpful', 'Unhelpful'),
+    ]
+    
+    id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
+    analysis = models.ForeignKey('Analysis', on_delete=models.CASCADE, related_name='feedback')
+    user = models.ForeignKey('User', on_delete=models.SET_NULL, null=True, blank=True)
+    
+    # Basic feedback
+    rating = models.CharField(max_length=10, choices=FEEDBACK_CHOICES)
+    
+    # Optional detailed feedback
+    comment = models.TextField(blank=True, null=True)
+    
+    # What aspects were good/bad
+    accuracy = models.BooleanField(null=True, blank=True)  # Was it accurate?
+    relevance = models.BooleanField(null=True, blank=True)  # Was it relevant?
+    helpful = models.BooleanField(null=True, blank=True)  # Was it helpful?
+    
+    # For custom questions
+    custom_question = models.ForeignKey('CustomQuestion', on_delete=models.CASCADE, null=True, blank=True, related_name='feedback')
+    
+    # For cumulative analysis
+    cumulative_analysis = models.ForeignKey('CumulativeAnalysis', on_delete=models.CASCADE, null=True, blank=True, related_name='feedback')
+    
+    # Metadata
+    created_at = models.DateTimeField(auto_now_add=True)
+    session_id = models.CharField(max_length=100, blank=True)  # Track anonymous users
+    
+    # What the user was trying to improve
+    improvement_areas = models.JSONField(default=list, blank=True)  # ["interpretation", "symbols", "tone", etc]
+    
+    class Meta:
+        indexes = [
+            models.Index(fields=['analysis']),
+            models.Index(fields=['rating']),
+            models.Index(fields=['created_at']),
+        ]
+        unique_together = [['analysis', 'user']]  # One feedback per user per analysis

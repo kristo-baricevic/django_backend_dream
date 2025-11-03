@@ -25,17 +25,18 @@ class SettingsListView(ListAPIView):
 
 class SettingsUpdateView(UpdateAPIView):
     serializer_class = SettingsSerializer
-    
+
     def get_object(self):
-        settings, created = Settings.objects.get_or_create(pk=1)
+        settings, _ = Settings.objects.get_or_create(pk=1)
         return settings
-    
+
+    def get_serializer(self, *args, **kwargs):
+        kwargs['partial'] = True
+        return super().get_serializer(*args, **kwargs)
+
     def post(self, request, *args, **kwargs):
         return self.update(request, *args, **kwargs)
-    
-    def update(self, request, *args, **kwargs):
-        kwargs['partial'] = True  # This makes all fields optional
-        return super().update(request, *args, **kwargs)
+
 
 class JournalEntryPagination(PageNumberPagination):
     page_size = 3
@@ -392,3 +393,98 @@ def get_workflow_execution(request, workflow_id):
         
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def submit_feedback(request):
+    """Submit feedback for an analysis"""
+    try:
+        analysis_id = request.data.get('analysis_id')
+        rating = request.data.get('rating')  # 'good' or 'bad'
+        comment = request.data.get('comment', '')
+        details = request.data.get('details', {})  # accuracy, relevance, helpful
+        
+        # Get the analysis
+        analysis = Analysis.objects.get(id=analysis_id)
+        
+        # Create or update feedback
+        feedback, created = AnalysisFeedback.objects.update_or_create(
+            analysis=analysis,
+            user=request.user if request.user.is_authenticated else None,
+            defaults={
+                'rating': rating,
+                'comment': comment,
+                'accuracy': details.get('accuracy'),
+                'relevance': details.get('relevance'),
+                'helpful': details.get('helpful'),
+                'session_id': request.session.session_key or '',
+            }
+        )
+        
+        return Response({
+            'success': True,
+            'feedback_id': str(feedback.id),
+            'created': created
+        })
+        
+    except Analysis.DoesNotExist:
+        return Response({'error': 'Analysis not found'}, status=404)
+    except Exception as e:
+        return Response({'error': str(e)}, status=500)
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def get_feedback_stats(request):
+    """Get feedback statistics for improvement"""
+    from django.db.models import Count, Q
+    
+    stats = {
+        'total_feedback': AnalysisFeedback.objects.count(),
+        'good_ratings': AnalysisFeedback.objects.filter(rating='good').count(),
+        'bad_ratings': AnalysisFeedback.objects.filter(rating='bad').count(),
+        
+        # By doctor personality
+        'by_doctor': {},
+        
+        # Recent bad feedback for review
+        'recent_bad': []
+    }
+    
+    # Stats by doctor personality
+    for analysis in Analysis.objects.filter(feedback__isnull=False).distinct():
+        doctor = analysis.doctor_personality
+        if doctor not in stats['by_doctor']:
+            stats['by_doctor'][doctor] = {'good': 0, 'bad': 0}
+        
+        feedback = analysis.feedback.first()
+        if feedback.rating == 'good':
+            stats['by_doctor'][doctor]['good'] += 1
+        else:
+            stats['by_doctor'][doctor]['bad'] += 1
+    
+    # Get recent bad feedback with comments
+    recent_bad = AnalysisFeedback.objects.filter(
+        rating='bad',
+        comment__isnull=False
+    ).exclude(comment='').order_by('-created_at')[:10]
+    
+    for fb in recent_bad:
+        stats['recent_bad'].append({
+            'date': fb.created_at.isoformat(),
+            'comment': fb.comment,
+            'doctor': fb.analysis.doctor_personality,
+            'mood': fb.analysis.mood,
+        })
+    
+    return Response(stats)
+
+@api_view(['GET'])
+def get_user_preferences(request):
+    analyzer = FeedbackAnalyzer()
+    prefs = analyzer.get_user_preferences(request.user.id)
+    return Response(prefs)
+
+@api_view(['GET'])
+def get_user_recommendations(request):
+    recs = PersonalizationHelper.get_user_recommendations(request.user.id)
+    return Response(recs)

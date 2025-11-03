@@ -30,11 +30,17 @@ class CustomQuestionSerializer(serializers.ModelSerializer):
 class SettingsSerializer(serializers.ModelSerializer):
     doctorPersonality = serializers.CharField(source='doctor_personality')
     doctorImage = serializers.CharField(source='doctor_image')
-    personality = serializers.CharField(source='personality_type')
+    personality = serializers.CharField(
+        source='personality_type',
+        allow_blank=True,
+        required=False
+    )
     medicalHistory = serializers.JSONField(source='medical_history')
     influence = serializers.JSONField(source='weights')
-    
+
     class Meta:
         model = Settings
-        fields = ['id', 'doctorPersonality', 'doctorImage', 'personality', 'occupation', 
-                  'medicalHistory', 'influence', 'astrology']
+        fields = [
+            'id', 'doctorPersonality', 'doctorImage', 'personality',
+            'occupation', 'medicalHistory', 'influence', 'astrology'
+        ]

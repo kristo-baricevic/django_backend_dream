@@ -1,6 +1,6 @@
 # myapp/urls.py
 from django.urls import path
-from .views import get_data, get_entries, get_entry, create_entry, update_entry, delete_entry, get_workflow_execution
+from .views import get_data, get_entries, submit_feedback, get_feedback_stats, get_user_preferences, get_user_recommendations, get_entry, create_entry, update_entry, delete_entry, get_workflow_execution
 from . import views
 
 urlpatterns = [
@@ -17,4 +17,8 @@ urlpatterns = [
     path('workflows/<uuid:workflow_id>/', get_workflow_execution, name='get_workflow_execution'),
     path('settings/', views.SettingsListView.as_view(), name='settings-list'),
     path('settings/update/', views.SettingsUpdateView.as_view(), name='settings-update'), 
+    path('api/feedback/submit/', submit_feedback, name='submit_feedback'),
+    path('api/feedback/stats/', get_feedback_stats, name='feedback_stats'),
+    path('api/feedback/preferences/', get_user_preferences),
+    path('api/feedback/recommendations/', get_user_recommendations),
 ]
