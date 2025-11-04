@@ -8,7 +8,7 @@ from rest_framework.response import Response
 from rest_framework.generics import ListAPIView, UpdateAPIView
 from rest_framework.pagination import PageNumberPagination
 from rest_framework import status
-from .models import Analysis, JournalEntry, CumulativeAnalysis, CustomQuestion, WorkflowExecution, Settings
+from .models import Analysis, JournalEntry, CumulativeAnalysis, CustomQuestion, WorkflowExecution, Settings, AnalysisFeedback
 from .serializers import AnalysisSerializer, JournalEntrySerializer, CumulativeAnalysisSerializer, CustomQuestionSerializer, SettingsSerializer
 from rest_framework.permissions import AllowAny
 from django.db.models import Q
@@ -344,6 +344,9 @@ def get_workflow_execution(request, workflow_id):
             WorkflowExecution.objects.prefetch_related('steps__citations'),
             id=workflow_id
         )
+
+        ca = execution.cumulative_analyses.order_by('-created_at').first()
+        analysis_id = str(ca.id) if ca else None
         
         steps_data = []
         for step in execution.steps.all():
@@ -386,6 +389,7 @@ def get_workflow_execution(request, workflow_id):
             'overall_confidence': execution.overall_confidence,
             'total_citations': execution.total_citations,
             'error_message': execution.error_message,
+            'analysis_id': analysis_id,
             'steps': steps_data,
         }
         
@@ -393,41 +397,70 @@ def get_workflow_execution(request, workflow_id):
         
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
-
+        
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def submit_feedback(request):
-    """Submit feedback for an analysis"""
+    """Submit feedback for Analysis, CumulativeAnalysis, or CustomQuestion"""
     try:
         analysis_id = request.data.get('analysis_id')
+        analysis_type = request.data.get('analysis_type', 'analysis')  # 'analysis', 'cumulative', 'custom_question'
         rating = request.data.get('rating')  # 'good' or 'bad'
         comment = request.data.get('comment', '')
         details = request.data.get('details', {})  # accuracy, relevance, helpful
-        
-        # Get the analysis
-        analysis = Analysis.objects.get(id=analysis_id)
-        
-        # Create or update feedback
-        feedback, created = AnalysisFeedback.objects.update_or_create(
-            analysis=analysis,
-            user=request.user if request.user.is_authenticated else None,
-            defaults={
-                'rating': rating,
-                'comment': comment,
-                'accuracy': details.get('accuracy'),
-                'relevance': details.get('relevance'),
-                'helpful': details.get('helpful'),
-                'session_id': request.session.session_key or '',
-            }
-        )
-        
+
+        user = request.user if request.user.is_authenticated else None
+
+        if analysis_type == 'cumulative':
+            cumulative = CumulativeAnalysis.objects.get(id=analysis_id)
+            feedback, created = AnalysisFeedback.objects.update_or_create(
+                cumulative_analysis=cumulative,
+                user=user,
+                defaults={
+                    'rating': rating,
+                    'comment': comment,
+                    'accuracy': details.get('accuracy'),
+                    'relevance': details.get('relevance'),
+                    'helpful': details.get('helpful'),
+                    'session_id': request.session.session_key or '',
+                }
+            )
+        elif analysis_type == 'custom_question':
+            question = CustomQuestion.objects.get(id=analysis_id)
+            feedback, created = AnalysisFeedback.objects.update_or_create(
+                custom_question=question,
+                user=user,
+                defaults={
+                    'rating': rating,
+                    'comment': comment,
+                    'accuracy': details.get('accuracy'),
+                    'relevance': details.get('relevance'),
+                    'helpful': details.get('helpful'),
+                    'session_id': request.session.session_key or '',
+                }
+            )
+        else:
+            analysis = Analysis.objects.get(id=analysis_id)
+            feedback, created = AnalysisFeedback.objects.update_or_create(
+                analysis=analysis,
+                user=user,
+                defaults={
+                    'rating': rating,
+                    'comment': comment,
+                    'accuracy': details.get('accuracy'),
+                    'relevance': details.get('relevance'),
+                    'helpful': details.get('helpful'),
+                    'session_id': request.session.session_key or '',
+                }
+            )
+
         return Response({
             'success': True,
             'feedback_id': str(feedback.id),
             'created': created
         })
-        
-    except Analysis.DoesNotExist:
+
+    except (Analysis.DoesNotExist, CumulativeAnalysis.DoesNotExist, CustomQuestion.DoesNotExist):
         return Response({'error': 'Analysis not found'}, status=404)
     except Exception as e:
         return Response({'error': str(e)}, status=500)

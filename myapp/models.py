@@ -233,7 +233,7 @@ class AnalysisFeedback(models.Model):
     ]
     
     id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
-    analysis = models.ForeignKey('Analysis', on_delete=models.CASCADE, related_name='feedback')
+    analysis = models.ForeignKey('Analysis', on_delete=models.CASCADE, related_name='feedback', null=True, blank=True)
     user = models.ForeignKey('User', on_delete=models.SET_NULL, null=True, blank=True)
     
     # Basic feedback
@@ -251,7 +251,7 @@ class AnalysisFeedback(models.Model):
     custom_question = models.ForeignKey('CustomQuestion', on_delete=models.CASCADE, null=True, blank=True, related_name='feedback')
     
     # For cumulative analysis
-    cumulative_analysis = models.ForeignKey('CumulativeAnalysis', on_delete=models.CASCADE, null=True, blank=True, related_name='feedback')
+    cumulative_analysis = models.ForeignKey('CumulativeAnalysis', on_delete=models.CASCADE, related_name='feedback', null=True, blank=True)
     
     # Metadata
     created_at = models.DateTimeField(auto_now_add=True)

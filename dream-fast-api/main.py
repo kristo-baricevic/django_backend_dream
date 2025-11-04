@@ -225,7 +225,6 @@ async def qa_with_workflow(
     # Return immediately
     return response_data
 
-
 @app.post("/custom-question-with-workflow")
 async def custom_question_with_workflow(
     request: QARequestCustom,
@@ -234,7 +233,6 @@ async def custom_question_with_workflow(
 ):
     """Start workflow and return immediately"""
     
-    # Create workflow ID first
     tracker = WorkflowTracker(
         workflow_type="custom-question-with-workflow",
         routine_name="Custom Question",
@@ -242,27 +240,34 @@ async def custom_question_with_workflow(
     )
     workflow_id = await tracker.start_workflow()
     
-    print(f"🔵 CREATED NEW WORKFLOW: {workflow_id}")  # ADD THIS
+    print(f"🔵 CREATED NEW WORKFLOW: {workflow_id}")
     
-    # Process in background
+    result, custom_question_id, _ = await journal_service.analyzer.custom_question_with_workflow(
+        request.question,
+        request.entries,
+        request.settings,
+        existing_workflow_id=workflow_id
+    )
+
     background_tasks.add_task(
         process_custom_question_workflow,
         workflow_id,
         request.question,
         request.entries,
         request.settings,
-        journal_service
+        journal_service,
+        str(custom_question_id)
     )
-    
-    response_data = {
+
+    print(f"🔵 CREATED NEW custom_question_id: {custom_question_id}")
+
+
+    return {
         "workflow_id": workflow_id,
+        "analysis_id": custom_question_id,
         "status": "processing"
     }
-    
-    print(f"🔵 RETURNING TO FRONTEND: {response_data}")  # ADD THIS
-    
-    # Return immediately
-    return response_data
+
 
 async def process_analysis_workflow(
     workflow_id: str,
@@ -286,16 +291,20 @@ async def process_custom_question_workflow(
     entries: List[Dict],
     settings: Dict,
     journal_service: DreamJournalService,
-    existing_workflow_id: str = None
+    existing_workflow_id: str = None,
+    custom_question_id: str = None
 ):
     """Background task to process the workflow"""
     try:
-        result, _ = await journal_service.analyzer.custom_question_with_workflow(
+        result, custom_question_id, _ = await journal_service.analyzer.custom_question_with_workflow(
             question,
             entries, 
             settings,
             existing_workflow_id=workflow_id
         )
+
+        print(f"✅ Created CustomQuestion ID: {custom_question_id}")
+
     except Exception as e:
         print(f"❌ Background task failed: {e}")
 

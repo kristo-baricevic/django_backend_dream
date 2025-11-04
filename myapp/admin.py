@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import User, JournalEntry, Analysis, CumulativeAnalysis, CustomQuestion, Settings
+from .models import User, JournalEntry, Analysis, CumulativeAnalysis, CustomQuestion, Settings, AnalysisFeedback
 
 class AnalysisInline(admin.StackedInline):
     model = Analysis
@@ -40,3 +40,9 @@ class CustomQuestionAdmin(admin.ModelAdmin):
 @admin.register(Settings)
 class SettingsAdmin(admin.ModelAdmin):
     pass
+    
+@admin.register(AnalysisFeedback)
+class AnalysisFeedbackAdmin(admin.ModelAdmin):
+    list_display = ('id', 'rating', 'user', 'analysis', 'cumulative_analysis', 'created_at')
+    list_filter = ('rating', 'created_at')
+    search_fields = ('comment',)

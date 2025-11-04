@@ -17,8 +17,8 @@ urlpatterns = [
     path('workflows/<uuid:workflow_id>/', get_workflow_execution, name='get_workflow_execution'),
     path('settings/', views.SettingsListView.as_view(), name='settings-list'),
     path('settings/update/', views.SettingsUpdateView.as_view(), name='settings-update'), 
-    path('api/feedback/submit/', submit_feedback, name='submit_feedback'),
-    path('api/feedback/stats/', get_feedback_stats, name='feedback_stats'),
-    path('api/feedback/preferences/', get_user_preferences),
-    path('api/feedback/recommendations/', get_user_recommendations),
+    path('feedback/submit/', submit_feedback, name='submit_feedback'),
+    path('feedback/stats/', get_feedback_stats, name='feedback_stats'),
+    path('feedback/preferences/', get_user_preferences),
+    path('feedback/recommendations/', get_user_recommendations),
 ]

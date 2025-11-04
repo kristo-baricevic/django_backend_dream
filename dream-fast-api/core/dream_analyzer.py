@@ -1626,7 +1626,7 @@ class DreamJournalAnalyzer:
                 workflow_execution_id=workflow_id
             )
 
-            return result, workflow_id
+            return result, saved_question.id, workflow_id
 
         except Exception as error:
             print(f'❌ Error in custom_question_with_workflow: {error}')

@@ -1,4 +1,5 @@
 source env/bin/activate 
+brew services start postgresql@14
 python manage.py makemigrations
 python manage.py migrate
 python3 manage.py runserver
