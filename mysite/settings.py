@@ -103,6 +103,7 @@ WSGI_APPLICATION = 'mysite.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/4.2/ref/settings/#databases
 
+##local docker startup
 ##LOCAL
 # DATABASES = {
 #     'default': {
@@ -115,28 +116,29 @@ WSGI_APPLICATION = 'mysite.wsgi.application'
 #     }
 # }
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'dreamdb',
-        'USER': 'dreamuser',
-        'PASSWORD': 'password123',
-        'HOST': '127.0.0.1',
-        'PORT': '5432',
-    }
-}
-
-##DEPLOYMENT
+##local manual startup
 # DATABASES = {
 #     'default': {
 #         'ENGINE': 'django.db.backends.postgresql',
 #         'NAME': 'dreamdb',
 #         'USER': 'dreamuser',
-#         'PASSWORD': 'dreampass',
-#         'HOST': 'db',
+#         'PASSWORD': 'password123',
+#         'HOST': '127.0.0.1',
 #         'PORT': '5432',
 #     }
 # }
+
+##DEPLOYMENT
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': 'dreamdb',
+        'USER': 'dreamuser',
+        'PASSWORD': 'dreampass',
+        'HOST': 'db',
+        'PORT': '5432',
+    }
+}
 
 # Password validation
 # https://docs.djangoproject.com/en/4.2/ref/settings/#auth-password-validators
