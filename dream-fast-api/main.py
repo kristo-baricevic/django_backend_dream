@@ -9,6 +9,9 @@ from contextlib import asynccontextmanager
 from typing import List, Dict, Any, Optional
 from fastapi import BackgroundTasks
 from core.workflow_tracker import WorkflowTracker
+from asgiref.sync import sync_to_async
+from myapp.models import WorkflowExecution
+from django.utils import timezone
 
 # Import your journal analyzer
 from core.dream_analyzer import (
@@ -204,7 +207,7 @@ async def qa_with_workflow(
     )
     workflow_id = await tracker.start_workflow()
     
-    print(f"🔵 CREATED NEW WORKFLOW: {workflow_id}")  # ADD THIS
+    print(f"🔵 CREATED NEW WORKFLOW: {workflow_id}")
     
     # Process in background
     background_tasks.add_task(
@@ -220,10 +223,10 @@ async def qa_with_workflow(
         "status": "processing"
     }
     
-    print(f"🔵 RETURNING TO FRONTEND: {response_data}")  # ADD THIS
+    print(f"🔵 RETURNING TO FRONTEND: {response_data}") 
     
-    # Return immediately
     return response_data
+
 
 @app.post("/custom-question-with-workflow")
 async def custom_question_with_workflow(
@@ -234,7 +237,7 @@ async def custom_question_with_workflow(
     """Start workflow and return immediately"""
     
     tracker = WorkflowTracker(
-        workflow_type="custom-question-with-workflow",
+        workflow_type="custom-question",
         routine_name="Custom Question",
         user_id=request.settings.get('user_id') if request.settings else None
     )
@@ -242,32 +245,27 @@ async def custom_question_with_workflow(
     
     print(f"🔵 CREATED NEW WORKFLOW: {workflow_id}")
     
-    result, custom_question_id, _ = await journal_service.analyzer.custom_question_with_workflow(
-        request.question,
-        request.entries,
-        request.settings,
-        existing_workflow_id=workflow_id
-    )
-
+    # Generate a temporary analysis ID (will be created properly in background)
+    import uuid
+    temp_analysis_id = str(uuid.uuid4())
+    
+    # Add to background tasks WITHOUT waiting for it
     background_tasks.add_task(
         process_custom_question_workflow,
         workflow_id,
         request.question,
         request.entries,
         request.settings,
-        journal_service,
-        str(custom_question_id)
+        journal_service
     )
 
-    print(f"🔵 CREATED NEW custom_question_id: {custom_question_id}")
-
+    print(f"🔵 RETURNING TO FRONTEND IMMEDIATELY")
 
     return {
         "workflow_id": workflow_id,
-        "analysis_id": custom_question_id,
+        # "analysis_id": temp_analysis_id,  # Temporary ID
         "status": "processing"
     }
-
 
 async def process_analysis_workflow(
     workflow_id: str,
@@ -296,6 +294,7 @@ async def process_custom_question_workflow(
 ):
     """Background task to process the workflow"""
     try:
+        # Run analysis and get the final result + created CustomQuestion ID
         result, custom_question_id, _ = await journal_service.analyzer.custom_question_with_workflow(
             question,
             entries, 
@@ -305,28 +304,54 @@ async def process_custom_question_workflow(
 
         print(f"✅ Created CustomQuestion ID: {custom_question_id}")
 
+        # ✅ Attach workflow → custom question
+        from myapp.models import CustomQuestion
+
+        custom_question = await sync_to_async(CustomQuestion.objects.get)(id=custom_question_id)
+        custom_question.workflow_execution_id = workflow_id
+        await sync_to_async(custom_question.save)(update_fields=["workflow_execution"])
+
+        # ✅ Persist analysis_id and result to the workflow record
+        execution = await sync_to_async(WorkflowExecution.objects.get)(id=workflow_id)
+        execution.analysis_id = custom_question_id
+        execution.final_result = result
+        execution.status = "completed"
+        await sync_to_async(execution.save)(update_fields=["analysis_id", "final_result", "status"])
+
+        print(f"💾 Updated WorkflowExecution {workflow_id} with analysis_id {custom_question_id}")
+
     except Exception as e:
         print(f"❌ Background task failed: {e}")
+        # Optional: mark workflow as failed
+        try:
+            execution = await sync_to_async(WorkflowExecution.objects.get)(id=workflow_id)
+            execution.status = "failed"
+            execution.final_result = str(e)
+            await sync_to_async(execution.save)()
+        except Exception as inner_e:
+            print(f"⚠️ Failed to update workflow status after error: {inner_e}")
+
 
 @app.get("/workflows/{workflow_id}")
 async def get_workflow(workflow_id: str):
     """Get workflow execution details"""
     from myapp.models import WorkflowExecution
     from asgiref.sync import sync_to_async
-    
+    print("🔍 get_workflow called")
     try:
         execution = await sync_to_async(
             WorkflowExecution.objects.prefetch_related('steps__citations').get
         )(id=workflow_id)
-        
+
         steps = await sync_to_async(list)(execution.steps.all())
-        
+        print(f"execution.analysis_id = {execution.analysis_id}")
         return {
             "id": str(execution.id),
             "workflow_type": execution.workflow_type,
             "routine_name": execution.routine_name,
             "status": execution.status,
-            # ... rest of response
+            "analysis_id": execution.analysis_id,
+            "final_result": execution.final_result,
         }
     except WorkflowExecution.DoesNotExist:
         raise HTTPException(status_code=404, detail="Workflow not found")

@@ -33,7 +33,8 @@ class WorkflowExecution(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     start_time = models.DateTimeField(auto_now_add=True)
     end_time = models.DateTimeField(null=True, blank=True)
-    
+    analysis_id = models.CharField(max_length=255, null=True, blank=True)
+
     # Results
     final_result = models.TextField(null=True, blank=True)
     overall_confidence = models.FloatField(null=True, blank=True)

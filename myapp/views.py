@@ -345,9 +345,14 @@ def get_workflow_execution(request, workflow_id):
             id=workflow_id
         )
 
-        ca = execution.cumulative_analyses.order_by('-created_at').first()
-        analysis_id = str(ca.id) if ca else None
-        
+        if execution.workflow_type == "custom-question":
+            analysis_id = str(execution.analysis_id) if execution.analysis_id else None
+        else:
+            ca = execution.cumulative_analyses.order_by('-created_at').first()
+            analysis_id = str(ca.id) if ca else None
+
+        print(f"analysis id === from workflow execution -==- {analysis_id}")
+
         steps_data = []
         for step in execution.steps.all():
             citations_data = [

@@ -1,6 +1,6 @@
 # Auto-generated dream symbols from knowledge base analysis
-        DREAM_SYMBOLS = [
-            "abandonment",
+DREAM_SYMBOLS = [
+    "abandonment",
     "abilities",
     "ability",
     "abode",
