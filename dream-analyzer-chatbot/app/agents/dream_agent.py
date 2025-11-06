@@ -5,6 +5,7 @@ from app.services.llm_service import llm_service
 from app.services.drf_client import api_client
 from openai import AsyncOpenAI
 from app.config import settings
+import httpx
 
 client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 
@@ -212,32 +213,31 @@ Be warm, curious, and patient. Help users remember their dreams by asking though
     async def _execute_tool(self, function_name: str, args: Dict[str, Any]) -> Dict:
         """Execute a tool and return the result"""
         try:
+           
+            # inside _execute_tool(...)
             if function_name == "save_dream":
-                result = await api_client.create_journal_entry(args["content"])
+                content = args["content"]
+
+                # 1) Save entry (returns UUID)
+                saved = await api_client.create_journal_entry(content)
+                entry_id = saved["id"]
+
+                # 2) Trigger Django's analyzer via the /update/ endpoint
+                base = settings.DJANGO_API_URL.rstrip("/")
+                url = f"{base}/entries/{entry_id}/update/"
+                async with httpx.AsyncClient(timeout=30) as hc:
+                    r = await hc.patch(url, json={}) 
+                    r.raise_for_status()
+                    updated = r.json()
+
                 return {
                     "success": True,
-                    "entry_id": result.get("id"),
-                    "message": "Dream saved successfully"
+                    "entry_id": entry_id,
+                    "message": "Dream saved and analyzed",
+                    "entry": updated,
+                    "analysis_saved": bool(updated.get("analysis")),
                 }
-            
-            elif function_name == "get_recent_dreams":
-                limit = args.get("limit", 5)
-                result = await api_client.get_journal_entries(limit=limit)
-                dreams = result.get("results", [])
-                return {
-                    "success": True,
-                    "dreams": [
-                        {
-                            "id": d["id"],
-                            "content": d["content"][:200] + "..." if len(d["content"]) > 200 else d["content"],
-                            "created_at": d["created_at"],
-                            "mood": d.get("analysis", {}).get("mood"),
-                            "subject": d.get("analysis", {}).get("subject")
-                        }
-                        for d in dreams
-                    ]
-                }
-            
+
             elif function_name == "analyze_dream":
                 result = await api_client.analyze_dream(args["content"])
                 return {
