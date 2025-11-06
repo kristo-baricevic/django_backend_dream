@@ -9,4 +9,6 @@ docker compose exec django python manage.py migrate
 pip install -r requirements.txt
 docker compose logs fastapi --tail=100 -f
 docker compose up --build
-uvicorn app.main:app --reload --port 8002
+uvicorn app.main:app --reload --port 8002\
+python manage.py shell
+

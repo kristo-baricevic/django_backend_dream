@@ -13,6 +13,10 @@ from .serializers import AnalysisSerializer, JournalEntrySerializer, CumulativeA
 from rest_framework.permissions import AllowAny
 from django.db.models import Q
 from django.utils.dateparse import parse_date
+# views.py
+from rest_framework.views import APIView
+from django.db import connection
+from collections import Counter
 
 
 class SettingsListView(ListAPIView):
@@ -173,6 +177,39 @@ class CustomQuestionListView(ListAPIView):
                 qs = qs.filter(created_at__date__lte=end_date)
 
         return qs
+
+class SymbolsListView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        table = Analysis._meta.db_table
+        with connection.cursor() as cur:
+            cur.execute(f"""
+                WITH s_text AS (
+                  SELECT jsonb_array_elements_text(symbols) AS sym
+                  FROM {table}
+                  WHERE jsonb_typeof(symbols)='array'
+                ),
+                s_obj AS (
+                  SELECT elem->>'symbol' AS sym
+                  FROM {table}
+                  CROSS JOIN LATERAL jsonb_array_elements(symbols) AS elem
+                  WHERE jsonb_typeof(symbols)='array' AND jsonb_typeof(elem)='object' AND elem ? 'symbol'
+                ),
+                s AS (
+                  SELECT sym FROM s_text
+                  UNION ALL
+                  SELECT sym FROM s_obj
+                )
+                SELECT sym, COUNT(*) AS cnt
+                FROM s
+                WHERE sym IS NOT NULL AND sym <> ''
+                GROUP BY sym
+                ORDER BY cnt DESC, sym ASC;
+            """)
+            rows = cur.fetchall()
+        return Response([{"symbol": r[0], "count": r[1]} for r in rows])
+
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
@@ -345,11 +382,12 @@ def get_workflow_execution(request, workflow_id):
             id=workflow_id
         )
 
-        if execution.workflow_type == "custom-question":
-            analysis_id = str(execution.analysis_id) if execution.analysis_id else None
-        else:
-            ca = execution.cumulative_analyses.order_by('-created_at').first()
-            analysis_id = str(ca.id) if ca else None
+        # if execution.workflow_type == "custom-question":
+        #     analysis_id = str(execution.analysis_id) if execution.analysis_id else None
+        # else:
+        #     ca = execution.cumulative_analyses.order_by('-created_at').first()
+        #     analysis_id = str(ca.id) if ca else None
+        analysis_id = str(execution.analysis_id) if execution.analysis_id else None
 
         print(f"analysis id === from workflow execution -==- {analysis_id}")
 

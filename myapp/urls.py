@@ -7,6 +7,7 @@ urlpatterns = [
     path('data/', get_data, name='get_data'),
     # path('entries/', get_entries, name='get_entries'),
     path('entries/', views.JournalEntryListView.as_view(), name='get_entries'),
+    path('symbols/', views.SymbolsListView.as_view(), name='get-symbols'),
     path('entries/<uuid:id>/', get_entry, name='get_entry'),
     path('entries/create/', create_entry, name='create_entry'),
     path('entries/<uuid:id>/update/', update_entry, name='update_entry'),

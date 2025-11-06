@@ -10,12 +10,12 @@ import time
 from datetime import datetime, timedelta
 
 # Configuration
-DJANGO_API = "https://dream-journal-app.com/api"
-FASTAPI_API = "https://dream-journal-app.com/fastapi"
+# DJANGO_API = "https://dream-journal-app.com/api"
+# FASTAPI_API = "https://dream-journal-app.com/fastapi"
 
 # For local testing, uncomment these:
-# DJANGO_API = "http://localhost:8000/api"
-# FASTAPI_API = "http://localhost:8001"
+DJANGO_API = "http://localhost:8000/api"
+FASTAPI_API = "http://localhost:8001"
 
 def quick_test():
     """Generate 5 test dreams quickly."""
