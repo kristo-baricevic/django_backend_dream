@@ -61,6 +61,7 @@ class JournalEntryListView(ListAPIView):
         entries = self.request.query_params.get('entries')
         title = self.request.query_params.get('title')
         moods = self.request.query_params.get('moods')
+        symbols = self.request.query_params.get('symbols')
         analysis = self.request.query_params.get('analysis')
         start_date = self.request.query_params.get('start_date')
         end_date = self.request.query_params.get('end_date')
@@ -71,6 +72,8 @@ class JournalEntryListView(ListAPIView):
             qs = qs.filter(analysis__subject__icontains=title)
         if moods:
             qs = qs.filter(analysis__mood__icontains=moods)
+        if symbols:
+            qs = qs.filter(analysis__symbols__icontains=symbols)
         if analysis:
             qs = qs.filter(analysis__summary__icontains=analysis)
 
