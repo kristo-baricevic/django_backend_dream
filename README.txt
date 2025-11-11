@@ -12,3 +12,8 @@ docker compose up --build
 uvicorn app.main:app --reload --port 8002\
 python manage.py shell
 
+
+docker logs -f dream_chatbot
+docker logs -f dream_django
+docker logs -f dream_fastapi
+docker logs -f dream_nginx
