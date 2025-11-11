@@ -1,6 +1,6 @@
 from typing import List, Dict, Any
 import json
-from app.models.schemas import ChatMessage
+from app.models.schemas import ChatMessage, UIEvent
 from app.services.llm_service import llm_service
 from app.services.drf_client import api_client
 from openai import AsyncOpenAI
@@ -154,61 +154,57 @@ Be warm, curious, and patient. Help users remember their dreams by asking though
         ]
     
     async def process_message(
-        self, 
+        self,
         user_message: str,
         conversation_history: List[ChatMessage]
-    ) -> str:
-        """
-        Process user message using function calling to determine actions.
-        """
-        # Build messages for OpenAI
+    ) -> Dict[str, Any]:
         messages = [{"role": "system", "content": self.system_prompt}]
-        
         for msg in conversation_history:
             messages.append({"role": msg.role, "content": msg.content})
-        
         messages.append({"role": "user", "content": user_message})
-        
-        # Call OpenAI with function calling
+
         response = await client.chat.completions.create(
             model=settings.OPENAI_MODEL,
             messages=messages,
             tools=self.tools,
             tool_choice="auto"
         )
-        
+
         response_message = response.choices[0].message
         tool_calls = response_message.tool_calls
-        
-        # If no tool calls, return the message directly
+
         if not tool_calls:
-            return response_message.content
-        
-        # Execute tool calls
+            return {"text": response_message.content, "ui_events": []}
+
         messages.append(response_message)
-        
+
+        collected_events: List[UIEvent] = []
+
         for tool_call in tool_calls:
             function_name = tool_call.function.name
             function_args = json.loads(tool_call.function.arguments)
-            
-            # Execute the function
+
             function_response = await self._execute_tool(function_name, function_args)
-            
-            # Add function response to messages
+
             messages.append({
                 "tool_call_id": tool_call.id,
                 "role": "tool",
                 "name": function_name,
                 "content": json.dumps(function_response)
             })
-        
-        # Get final response from OpenAI
+
+            # Optional: let tools return UI events under "ui_events"
+            if isinstance(function_response, dict) and "ui_events" in function_response:
+                for evt in function_response["ui_events"]:
+                    collected_events.append(UIEvent(**evt))
+
         final_response = await client.chat.completions.create(
             model=settings.OPENAI_MODEL,
             messages=messages
         )
-        
-        return final_response.choices[0].message.content
+        text = final_response.choices[0].message.content
+        return {"text": text, "ui_events": collected_events}
+
     
     async def _execute_tool(self, function_name: str, args: Dict[str, Any]) -> Dict:
         """Execute a tool and return the result"""
@@ -236,7 +232,12 @@ Be warm, curious, and patient. Help users remember their dreams by asking though
                     "message": "Dream saved and analyzed",
                     "entry": updated,
                     "analysis_saved": bool(updated.get("analysis")),
+                    "ui_events": [
+                        { "type": "dream_staged", "payload": { "dream_id": entry_id, "staged": True } },
+                        { "type": "refresh", "payload": { "scope": "dreams_list", "reason": "staged_update" } }
+                    ]
                 }
+
 
             elif function_name == "analyze_dream":
                 result = await api_client.analyze_dream(args["content"])

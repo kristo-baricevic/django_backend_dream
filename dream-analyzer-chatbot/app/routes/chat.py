@@ -17,17 +17,20 @@ async def send_message(request: ChatRequest):
     Send a message and get a response (non-streaming)
     """
     try:
-        response_text = await dream_agent.process_message(
+        result = await dream_agent.process_message(
             user_message=request.message,
             conversation_history=request.conversation_history or []
         )
         
         return ChatResponse(
-            message=response_text,
-            timestamp=datetime.now()
+            message=result["text"],
+            timestamp=datetime.now(),
+            ui_events=result.get("ui_events", [])
         )
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.post("/message/stream")
 async def send_message_stream(request: ChatRequest):
