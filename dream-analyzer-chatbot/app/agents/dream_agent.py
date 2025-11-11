@@ -185,6 +185,9 @@ Be warm, curious, and patient. Help users remember their dreams by asking though
             function_args = json.loads(tool_call.function.arguments)
 
             function_response = await self._execute_tool(function_name, function_args)
+            if isinstance(function_response, dict) and function_response.get("success") is False:
+                return {"text": f"Save failed: {function_response.get('error')}", "ui_events": function_response.get("ui_events", [])}
+
 
             messages.append({
                 "tool_call_id": tool_call.id,
@@ -221,10 +224,22 @@ Be warm, curious, and patient. Help users remember their dreams by asking though
                 # 2) Trigger Django's analyzer via the /update/ endpoint
                 base = settings.DJANGO_API_URL.rstrip("/")
                 url = f"{base}/entries/{entry_id}/update/"
-                async with httpx.AsyncClient(timeout=30) as hc:
-                    r = await hc.patch(url, json={}) 
-                    r.raise_for_status()
-                    updated = r.json()
+                # async with httpx.AsyncClient(timeout=30) as hc:
+                #     r = await hc.patch(url, json={}) 
+                #     r.raise_for_status()
+                #     updated = r.json()
+
+                # inside save_dream, keep your existing code
+                try:
+                    async with httpx.AsyncClient(timeout=30) as hc:
+                        r = await hc.patch(url, json={})
+                        body = r.text  # capture body for logs
+                        r.raise_for_status()
+                        updated = r.json()
+                except Exception as e:
+                    print(f"PATCH {url} failed: {repr(e)} | status={getattr(r,'status_code',None)} body={body}")
+                    return {"success": False, "error": f"PATCH failed: {getattr(r,'status_code',None)} {body}"}
+
 
                 return {
                     "success": True,
