@@ -43,6 +43,7 @@ services:
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - DATABASE_URL=postgresql+psycopg2://dreamuser:dreampass@db:5432/dreamdb
+      - DJANGO_API_URL=http://django:8000 
     volumes:
       - ./dream-analyzer-chatbot:/app
       - .:/django_backend_dream
