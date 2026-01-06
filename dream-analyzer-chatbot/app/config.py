@@ -9,9 +9,9 @@ class Settings(BaseSettings):
     # Backend APIs - switch for local
     # DJANGO_API_URL: str = "http://localhost:8000/api"
     # DREAM_ANALYZER_URL: str = "http://localhost:8000"
-    DJANGO_API_URL=http://dream_django:8000/api
-    DREAM_ANALYZER_URL=http://dream_fastapi:8001
-    
+    DJANGO_API_URL: str = "http://dream_django:8000/api"
+    DREAM_ANALYZER_URL: str = "http://dream_fastapi:8001"
+
     # CORS - ADD YOUR PRODUCTION DOMAINS HERE
     CORS_ORIGINS: List[str] = [
         "http://localhost:3000",
