@@ -198,7 +198,8 @@ async def qa_with_workflow(
     journal_service: DreamJournalService = Depends(get_service)
 ):
     """Start workflow and return immediately"""
-    
+    print(f"qa_with_workflow start == {workflow_id}")
+
     # Create workflow ID first
     tracker = WorkflowTracker(
         workflow_type="cumulative_analysis",
