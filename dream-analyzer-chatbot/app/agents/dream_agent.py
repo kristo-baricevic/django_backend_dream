@@ -33,6 +33,9 @@ When a user starts describing a dream (e.g., "I had a dream about flying"), DO N
    - You've gathered a substantial dream description (at least 2-3 exchanges)
    - The user asks you to save it or analyze it
 
+For “Analyze all of my dreams” or cumulative analysis, call get_cumulative_analysis directly.
+Never use get_recent_dreams for cumulative analysis.
+
 Other capabilities:
 - View their past dreams
 - Get AI-powered analysis of their dreams
@@ -116,7 +119,10 @@ Be warm, curious, and patient. Help users remember their dreams by asking though
                 "type": "function",
                 "function": {
                     "name": "get_cumulative_analysis",
-                    "description": "Get cumulative insights across multiple dreams",
+                    "description": (
+                        "Perform cumulative analysis across the user's entire dream history. "
+                        "This tool handles all data retrieval internally."
+                    ),
                     "parameters": {
                         "type": "object",
                         "properties": {
