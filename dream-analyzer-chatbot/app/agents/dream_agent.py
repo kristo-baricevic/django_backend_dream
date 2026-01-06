@@ -292,9 +292,16 @@ Be warm, curious, and patient. Help users remember their dreams by asking though
                 }
             
             elif function_name == "get_cumulative_analysis":
+                print(f"get_cumulative_analysis")
                 limit = args.get("limit", 10)
                 # Get recent entries
-                entries_response = await api_client.get_journal_entries(limit=limit)
+                try:
+                    entries_response = await api_client.get_journal_entries(limit=limit)
+                    print("entries_response:", entries_response)
+                except Exception as e:
+                    print("get_journal_entries failed:", repr(e))
+                    return {"success": False, "error": str(e)}
+                    
                 entries = entries_response.get("results", [])
                 
                 # Start cumulative analysis workflow
