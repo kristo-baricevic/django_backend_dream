@@ -301,13 +301,13 @@ Be warm, curious, and patient. Help users remember their dreams by asking though
                 except Exception as e:
                     print("get_journal_entries failed:", repr(e))
                     return {"success": False, "error": str(e)}
-                    
+
                 entries = entries_response.get("results", [])
                 
                 # Start cumulative analysis workflow
                 workflow_response = await api_client.get_cumulative_analysis_workflow(entries)
                 workflow_id = workflow_response.get("workflow_id")
-                
+
                 # Poll for completion (simplified - in production use webhooks)
                 import asyncio
                 for _ in range(30):  # Wait up to 30 seconds
