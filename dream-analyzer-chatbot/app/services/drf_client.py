@@ -154,11 +154,13 @@ class APIClient:
             "entries": entries,
             "settings": settings or {}
         }
-        print(f"get_cumulative_analysis_workflow step")
+        print("get_cumulative_analysis_workflow step")
         response = await self.client.post(
             f"{self.analyzer_base_url}/qa-with-workflow",
             json=payload
         )
+        print("get_cumulative_analysis_workflow response", response)
+
         response.raise_for_status()
         return response.json()
     
