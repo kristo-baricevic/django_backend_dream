@@ -189,11 +189,12 @@ Be warm, curious, and patient. Help users remember their dreams by asking though
         for tool_call in tool_calls:
             function_name = tool_call.function.name
             function_args = json.loads(tool_call.function.arguments)
+            
+            print("TOOL_CALL:", function_name, function_args)
 
             function_response = await self._execute_tool(function_name, function_args)
             if isinstance(function_response, dict) and function_response.get("success") is False:
-                return {"text": f"Save failed: {function_response.get('error')}", "ui_events": function_response.get("ui_events", [])}
-
+                return {"text": f"{function_name} failed: {function_response.get('error')}", "ui_events": function_response.get("ui_events", [])}
 
             messages.append({
                 "tool_call_id": tool_call.id,
