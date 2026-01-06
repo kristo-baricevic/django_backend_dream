@@ -31,7 +31,7 @@ When a user starts describing a dream (e.g., "I had a dream about flying"), DO N
 4. ONLY call save_dream() when:
    - The user explicitly says they're done (e.g., "that's all I remember", "that's it")
    - You've gathered a substantial dream description (at least 2-3 exchanges)
-   - The user asks you to save it or analyze it
+   - The user asks you to save it
 
 For “Analyze all of my dreams” or cumulative analysis, call get_cumulative_analysis directly.
 Never use get_recent_dreams for cumulative analysis.
