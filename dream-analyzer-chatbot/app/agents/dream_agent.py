@@ -297,7 +297,6 @@ Be warm, curious, and patient. Help users remember their dreams by asking though
                 # Get recent entries
                 try:
                     entries_response = await api_client.get_journal_entries(limit=limit)
-                    print("entries_response:", entries_response)
                 except Exception as e:
                     print("get_journal_entries failed:", repr(e))
                     return {"success": False, "error": str(e)}
