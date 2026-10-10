@@ -8,12 +8,15 @@ class FeedbackAnalyzer:
     def __init__(self):
         self.feedback_data = []
         
-    def get_user_preferences(self, user_id):
+    def get_user_preferences(self, user_id, *, owner=None):
         """Track individual user's preferences for personalization"""
         
         user_feedback = AnalysisFeedback.objects.filter(
             user_id=user_id
-        ).select_related('analysis')
+        ).select_related('analysis', 'cumulative_analysis', 'custom_question')
+        if owner is not None:
+            from myapp.security.freshness import eligible_feedback
+            user_feedback = eligible_feedback(owner)
         
         preferences = {
             'preferred_doctors': {},
@@ -23,7 +26,10 @@ class FeedbackAnalyzer:
         
         # Track which doctor styles this user likes
         for feedback in user_feedback:
-            doctor = feedback.analysis.doctor_personality
+            target = feedback.analysis or feedback.cumulative_analysis or feedback.custom_question
+            if target is None or target.user_id != user_id:
+                continue
+            doctor = target.doctor_personality
             if doctor not in preferences['preferred_doctors']:
                 preferences['preferred_doctors'][doctor] = {'liked': 0, 'disliked': 0}
             
@@ -35,7 +41,10 @@ class FeedbackAnalyzer:
         # Track weight preferences
         good_analyses = user_feedback.filter(rating='good')
         for feedback in good_analyses:
-            weights = feedback.analysis.weights
+            target = feedback.analysis or feedback.cumulative_analysis or feedback.custom_question
+            if target is None or target.user_id != user_id:
+                continue
+            weights = target.weights
             # Store weights that this user responded well to
             preferences['preferred_weights'] = weights  # Use their most recent liked config
         
@@ -155,11 +164,11 @@ class PersonalizationHelper:
     """Help users find their preferences, not "optimal" settings"""
     
     @classmethod
-    def get_user_recommendations(cls, user_id):
+    def get_user_recommendations(cls, user_id, *, owner=None):
         """Suggest settings based on individual user's past preferences"""
         
         analyzer = FeedbackAnalyzer()
-        preferences = analyzer.get_user_preferences(user_id)
+        preferences = analyzer.get_user_preferences(user_id, owner=owner)
         
         recommendations = {
             'suggested_doctor': None,

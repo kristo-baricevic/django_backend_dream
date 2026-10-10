@@ -1,7 +1,7 @@
 # models.py
 from uuid import uuid4
 from django.db import models
-from django.contrib.auth.models import User
+from django.conf import settings as django_settings
 import uuid
 
 class User(models.Model):
@@ -9,6 +9,12 @@ class User(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     email = models.EmailField(unique=True)
+    auth_user = models.OneToOneField(django_settings.AUTH_USER_MODEL, null=True, blank=True,
+                                     on_delete=models.PROTECT, related_name='dream_owner')
+    active_settings = models.ForeignKey('Settings', null=True, blank=True,
+                                        on_delete=models.SET_NULL, related_name='+')
+    is_local_fixture = models.BooleanField(default=False, editable=False)
+    import_ready = models.BooleanField(default=True, editable=False)
 
     def __str__(self):
         return self.email
@@ -34,6 +40,9 @@ class WorkflowExecution(models.Model):
     start_time = models.DateTimeField(auto_now_add=True)
     end_time = models.DateTimeField(null=True, blank=True)
     analysis_id = models.CharField(max_length=255, null=True, blank=True)
+    accepted_auth_user_id = models.PositiveBigIntegerField(null=True, blank=True, editable=False)
+    is_historical = models.BooleanField(default=False, editable=False)
+    source_metadata = models.JSONField(default=dict, editable=False)
 
     # Results
     final_result = models.TextField(null=True, blank=True)
@@ -109,7 +118,7 @@ class Analysis(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-    entry = models.OneToOneField('JournalEntry', related_name='entry_analysis', on_delete=models.CASCADE) 
+    entry = models.ForeignKey('JournalEntry', related_name='analysis_versions', on_delete=models.CASCADE)
     user = models.ForeignKey('User', related_name='analyses', on_delete=models.CASCADE, null=True, blank=True)
     mood = models.CharField(max_length=255)
     summary = models.TextField()
@@ -121,6 +130,8 @@ class Analysis(models.Model):
     doctor_personality = models.TextField(blank=True, default='')
     weights = models.JSONField(default=dict)
     symbols = models.JSONField(default=list)
+    grounding_metadata = models.JSONField(default=dict, editable=False)
+    is_historical = models.BooleanField(default=False, editable=False)
     
     class Meta:
         indexes = [models.Index(fields=['user'])]
@@ -133,6 +144,7 @@ class CumulativeAnalysis(models.Model):
     analysis = models.TextField()
     doctor_personality = models.TextField(blank=True, default='')
     weights = models.JSONField(default=dict)
+    is_historical = models.BooleanField(default=False, editable=False)
     workflow_execution = models.ForeignKey(
             WorkflowExecution, 
             on_delete=models.SET_NULL, 
@@ -153,6 +165,7 @@ class CustomQuestion(models.Model):
     weights = models.JSONField(default=dict)
     answer = models.TextField()
     doctor_personality = models.TextField(blank=True, default='')
+    is_historical = models.BooleanField(default=False, editable=False)
 
     workflow_execution = models.ForeignKey(
         WorkflowExecution, 
@@ -268,3 +281,48 @@ class AnalysisFeedback(models.Model):
             models.Index(fields=['created_at']),
         ]
         unique_together = [['analysis', 'user']]  # One feedback per user per analysis
+
+
+class LoginAttemptBucket(models.Model):
+    key = models.CharField(max_length=64, primary_key=True)
+    started_at = models.DateTimeField()
+    attempts = models.PositiveIntegerField(default=0)
+    failures = models.PositiveIntegerField(default=0)
+    blocked_until = models.DateTimeField(null=True)
+    reservations = models.JSONField(default=dict)
+
+
+class DataCopyRun(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
+    key = models.CharField(max_length=100, unique=True)
+    owner = models.ForeignKey(User, on_delete=models.PROTECT)
+    source_identity = models.JSONField(default=dict)
+    manifest_digest = models.CharField(max_length=64)
+    state = models.CharField(max_length=32, default='staged')
+    settings_preimage = models.UUIDField(null=True)
+    active_settings_copy = models.UUIDField(null=True)
+    counts = models.JSONField(default=dict)
+    files = models.JSONField(default=list)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+class DataCopyRecord(models.Model):
+    run = models.ForeignKey(DataCopyRun, on_delete=models.CASCADE, related_name='records')
+    model_label = models.CharField(max_length=100)
+    source_id = models.UUIDField()
+    destination_id = models.UUIDField()
+    digest = models.CharField(max_length=64)
+    digest_version = models.PositiveSmallIntegerField(default=2, editable=False)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['run', 'model_label', 'source_id'],
+                                              name='unique_copy_source_record')]
+
+
+# Parent integrates this explicit bottom import after the auth-owned model changes.
+from .longitudinal_models import (  # noqa: F401, E402
+    ObservationSuppression,
+    LongitudinalState, EntryAuditPreference, DreamReflection, EntryAudit,
+    DreamObservation, ThemeRecord, ThemeReview, ThemeMerge, ThemeMergeMember,
+    ProfileSnapshot, SnapshotSource, AuditRun, AuditRunEntry,
+)

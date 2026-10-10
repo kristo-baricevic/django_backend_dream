@@ -3,25 +3,19 @@ from pydantic_settings import BaseSettings
 from typing import List
 
 class Settings(BaseSettings):
+    DREAM_ENV: str = 'production'
     # API Keys
-    OPENAI_API_KEY: str
+    OPENAI_API_KEY: str = ""
     
     # Backend APIs - switch for local
     # DJANGO_API_URL: str = "http://localhost:8000/api"
     # DREAM_ANALYZER_URL: str = "http://localhost:8000"
-    DJANGO_API_URL: str = "http://dream_django:8000/api"
-    DREAM_ANALYZER_URL: str = "http://dream_fastapi:8001"
+    DJANGO_API_URL: str
+    DREAM_ANALYZER_URL: str
 
     # CORS - ADD YOUR PRODUCTION DOMAINS HERE
-    CORS_ORIGINS: List[str] = [
-        "http://localhost:3000",
-        "http://localhost:5173",
-        "https://dream-app-nu.vercel.app",
-        "https://www.dream-app-nu.vercel.app",
-        "https://dream-journal-app.com",
-        "https://www.dream-journal-app.com",
-    ]
-    
+    CORS_ORIGINS: List[str] = []
+
     # OpenAI Settings
     OPENAI_MODEL: str = "gpt-4o-mini"
     OPENAI_TEMPERATURE: float = 0.7

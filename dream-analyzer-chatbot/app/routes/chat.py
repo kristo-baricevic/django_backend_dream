@@ -1,118 +1,52 @@
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException
-from fastapi.responses import StreamingResponse
-from datetime import datetime
 import json
-from typing import List
-
-from app.models.schemas import ChatRequest, ChatResponse, ChatMessage
-from app.agents.dream_agent import dream_agent
+from datetime import datetime
+from fastapi import APIRouter, Request, WebSocket, HTTPException
+from fastapi.responses import StreamingResponse
+from app.models.schemas import ChatRequest, ChatResponse
+from app.services.drf_client import APIClient
+from app.agents.dream_agent import DreamAgent
 
 router = APIRouter()
 
-# NO MORE OPTIONS HANDLERS - deleted correctly
-
-@router.post("/message", response_model=ChatResponse)
-async def send_message(request: ChatRequest):
-    """
-    Send a message and get a response (non-streaming)
-    """
+@router.post('/message', response_model=ChatResponse)
+async def message(payload: ChatRequest, request: Request):
+    api = APIClient(request.headers)
     try:
-        result = await dream_agent.process_message(
-            user_message=request.message,
-            conversation_history=request.conversation_history or []
-        )
-        
-        return ChatResponse(
-            message=result["text"],
-            timestamp=datetime.now(),
-            ui_events=result.get("ui_events", [])
-        )
+        await api.client.validate()
+        # Browser histories have no server-stamped source/settings provenance.
+        # Each turn starts from the current user message and freshly owned tools.
+        result = await DreamAgent(api).process_message(payload.message, [])
+        await api.client.validate()  # discard a response after logout/expiry during generation
+        return ChatResponse(message=result['text'], timestamp=datetime.now(), ui_events=result.get('ui_events', []))
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(503, 'Chat unavailable.')
+    finally:
+        await api.close()
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/message/stream")
-async def send_message_stream(request: ChatRequest):
-    """
-    Send a message and get a streaming response
-    """
+@router.post('/message/stream')
+async def stream(payload: ChatRequest, request: Request):
+    api = APIClient(request.headers)
+    try:
+        await api.client.validate()
+    except Exception:
+        await api.close()
+        raise
     async def generate():
         try:
-            async for chunk in dream_agent.stream_response(
-                user_message=request.message,
-                conversation_history=request.conversation_history or []
-            ):
-                yield f"data: {json.dumps({'content': chunk, 'done': False})}\n\n"
-            
-            # Send completion signal
-            yield f"data: {json.dumps({'content': '', 'done': True})}\n\n"
-        except Exception as e:
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
-    
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-        }
-    )
+            async for chunk in DreamAgent(api).stream_response(payload.message, []):
+                await api.client.validate()
+                yield 'data: ' + json.dumps({'content': chunk, 'done': False}) + '\n\n'
+            yield 'data: ' + json.dumps({'content': '', 'done': True}) + '\n\n'
+        except Exception:
+            yield 'data: ' + json.dumps({'error': 'Chat unavailable.', 'done': True}) + '\n\n'
+        finally:
+            await api.close()
+    return StreamingResponse(generate(), media_type='text/event-stream',
+                             headers={'Cache-Control': 'no-store, private', 'Vary': 'Cookie'})
 
-@router.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    """
-    WebSocket endpoint for real-time chat
-    """
-    await websocket.accept()
-    conversation_history: List[ChatMessage] = []
-    
-    try:
-        while True:
-            # Receive message from client
-            data = await websocket.receive_text()
-            message_data = json.loads(data)
-            user_message = message_data.get("message", "")
-            
-            if not user_message:
-                continue
-            
-            # Add user message to history
-            conversation_history.append(
-                ChatMessage(role="user", content=user_message)
-            )
-            
-            # Stream response back
-            full_response = ""
-            async for chunk in dream_agent.stream_response(
-                user_message=user_message,
-                conversation_history=conversation_history[:-1]  # Exclude current message
-            ):
-                full_response += chunk
-                await websocket.send_json({
-                    "type": "stream",
-                    "content": chunk,
-                    "done": False
-                })
-            
-            # Send completion
-            await websocket.send_json({
-                "type": "stream",
-                "content": "",
-                "done": True
-            })
-            
-            # Add assistant response to history
-            conversation_history.append(
-                ChatMessage(role="assistant", content=full_response)
-            )
-            
-            # Trim history if too long
-            if len(conversation_history) > 20:
-                conversation_history = conversation_history[-20:]
-                
-    except WebSocketDisconnect:
-        print("WebSocket disconnected")
-    except Exception as e:
-        print(f"WebSocket error: {e}")
-        await websocket.close()
+@router.websocket('/ws')
+async def websocket(websocket: WebSocket):
+    # Browser uses HTTP. Keep unused legacy transport closed until authenticated protocol exists.
+    await websocket.close(code=1008)

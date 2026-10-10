@@ -1,0 +1,51 @@
+name: dream-auth-task12
+x-django-env: &django-env
+  DREAM_ENV: local
+  DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set a fresh isolated local secret of at least 50 characters}
+  DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1
+  DREAM_BROWSER_ORIGINS: http://localhost:3100
+  DREAM_ENABLE_LOCAL_FIXTURE: ${DREAM_ENABLE_LOCAL_FIXTURE:-0}
+  DREAM_ANALYZER_URL: http://analyzer:8001
+  DREAM_LOGIN_PROXY_CIDRS: 127.0.0.0/8,172.31.121.0/24
+  POSTGRES_DB: dream_auth_local
+  POSTGRES_USER: dream_auth_local
+  POSTGRES_PASSWORD: ${DREAM_LOCAL_DB_PASSWORD:?Set a fresh isolated database password}
+  POSTGRES_HOST: db
+  POSTGRES_PORT: 5432
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: dream_auth_local
+      POSTGRES_USER: dream_auth_local
+      POSTGRES_PASSWORD: ${DREAM_LOCAL_DB_PASSWORD:?Set a fresh isolated database password}
+    ports: ["127.0.0.1:55434:5432"]
+    volumes: ["auth_local_data:/var/lib/postgresql/data"]
+  django:
+    build: .
+    environment: *django-env
+    ports: ["127.0.0.1:15400:8000"]
+    depends_on: [db]
+  analyzer:
+    build: ./dream-fast-api
+    environment:
+      <<: *django-env
+      DREAM_DISABLE_PROVIDER_STARTUP: "1"
+      PYTHONPATH: /django_backend_dream
+    volumes: [".:/django_backend_dream:ro"]
+    ports: ["127.0.0.1:15401:8001"]
+    depends_on: [db]
+  chat:
+    build: ./dream-analyzer-chatbot
+    environment:
+      DREAM_ENV: local
+      DJANGO_API_URL: http://django:8000/api
+      DREAM_ANALYZER_URL: http://analyzer:8001
+      CORS_ORIGINS: '["http://localhost:3100"]'
+    ports: ["127.0.0.1:15402:8002"]
+networks:
+  default:
+    ipam:
+      config: [{subnet: 172.31.121.0/24}]
+volumes:
+  auth_local_data:
