@@ -5,6 +5,7 @@ from django.contrib.admin.forms import AdminAuthenticationForm
 from django.core.exceptions import ValidationError
 from .models import User, JournalEntry, Analysis, CumulativeAnalysis, CustomQuestion, Settings, AnalysisFeedback
 from .security.owner import require_owner, _valid_profile
+from .security.freshness import eligible_queryset, eligible_feedback, private_read_method
 
 
 class LinkedAdminAuthenticationForm(AdminAuthenticationForm):
@@ -27,7 +28,25 @@ class OwnedReadOnlyAdmin(admin.ModelAdmin):
     def get_queryset(self, request):
         owner = require_owner(request)
         query = super().get_queryset(request)
-        return query.filter(pk=owner.domain_user_id) if self.model is User else query.filter(user_id=owner.domain_user_id)
+        if self.model is User:
+            return query.filter(pk=owner.domain_user_id)
+        if self.model is AnalysisFeedback:
+            return eligible_feedback(owner)
+        return eligible_queryset(self.model, owner)
+
+    @private_read_method
+    def changelist_view(self, request, extra_context=None):
+        response = super().changelist_view(request, extra_context=extra_context)
+        if hasattr(response, 'render'):
+            response.render()
+        return response
+
+    @private_read_method
+    def change_view(self, request, object_id, form_url='', extra_context=None):
+        response = super().change_view(request, object_id, form_url, extra_context)
+        if hasattr(response, 'render'):
+            response.render()
+        return response
 
     def get_readonly_fields(self, request, obj=None):
         return tuple(field.name for field in self.model._meta.fields)

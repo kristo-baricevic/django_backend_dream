@@ -74,10 +74,70 @@ owner explicitly. Accepted jobs may finish after logout; account deactivation,
 relinking, withdrawn import visibility, removed/foreign sources or historical
 workflows block publication. Never persist session cookies in job metadata.
 
-Longitudinal migration 0020, privacy/source revisions and private-model copy
-adapters are a coordinated integration follow-up. Outbound longitudinal provider
-context stays disabled until all owner/retention/revocation gates pass combined
-tests. Private dream indexes must not be placed in the shared reference FAISS.
+Migration 0020 adds the fourteen private longitudinal resources. The opt-in
+profile worker stores accepted owner/auth IDs, not credentials, and extracts
+literal English candidates locally. Auditing starts disabled and sources start
+excluded. Generated and unknown provenance requires explicit reclassification.
+Provider profile context stays disabled and empty. Private dream indexes must
+never be placed in the shared reference FAISS.
+
+## Source and session fences
+
+`X-Dream-Principal` and `X-Dream-Session` are optional rejection-only browser
+preconditions. They must match the authenticated owner and immutable deadline;
+they never grant access. Before a request-bound read/write callback, the server
+locks and rechecks the stored Session row, its current expiry, backend, auth hash
+and deadline. Password changes, logout and expiry while waiting for a lock block
+the callback. Accepted durable jobs omit session credentials and deliberately
+outlive logout; deactivation, relinking and source/settings/privacy changes still
+prevent provider dispatch or result publication.
+
+Source edits/deletes carry `expected_revision` (source/privacy/review),
+`expected_session`, `expected_source` (entry ID/full UTF-8 hash/update timestamp)
+and `expected_operation`, plus the principal header. The frontend captures a
+preview and reconfirms the session after the warning. Under auth → domain →
+longitudinal state → workflow locks, the backend compares that complete ticket
+and invalidates private derived state before touching the source. No-op writes
+preserve review history; stale current analysis pointers detach for reanalysis.
+
+Migration 0021 adds durable analysis/workflow grounding metadata and preserves
+analysis versions. Server-owned snapshots seal the accepted account, every
+selected source's whole-content hash, all three revision counters and canonical
+Settings/doctor configuration. They are rechecked before provider work,
+publication and immutable DTO serialization. Result reads, export-shaped list
+responses, generated-field searches, statistics and feedback ignore stale or
+ineligible derivations. Selected sources omitted by retrieval remain dependencies.
+Deleting a workflow cannot turn a current result into historical data.
+
+Existing analyses are explicitly marked historical rather than assigned invented
+current consent/revisions. They remain labelled historical in the UI and cannot
+contribute generated fields to current journal searches, statistics or chat.
+Historical cumulative/question result lists remain owner-scoped and searchable.
+Reverse
+migration refuses to discard additional versions or grounding metadata.
+Copy-ledger digest version 2 rebases old unchanged records only after matching
+their old-schema digest and the exact permitted additive defaults. Changed or
+unknown rows remain incompatible and block reconciliation/rollback.
+
+The private-copy contract inventories all fourteen resources. Only explicitly
+selected authored reflections may be copied, with remapped relations, preserved
+timestamps and consent reset. Audits, themes, profiles, jobs and private indexes
+are discarded and rebuilt privately. Unknown resources/index namespaces fail
+closed. This does not fill the missing full source export described above.
+
+## RAG and chat scope
+
+Analysis accepts at most 500 entries, 200,000 content characters and a 4,000
+character question. Evidence identifies source spans and distinguishes record
+observations, public references and hypotheses. Calibration and semantic
+entailment are unavailable; structural evidence checks are not clinical or
+semantic validation. Fictional persona metadata is explicit, medical history is
+excluded, and the existing medical-influence control has no numerical effect.
+
+Chat discards caller-supplied prior conversation and compares Django's server
+context fence before tools, model dispatch and each released chunk. Saving a
+model-generated dream is disabled; the journal editor is the persistence path.
+No retained private conversation or longitudinal provider context is enabled.
 
 ## Validation
 
@@ -85,13 +145,21 @@ Synthetic tests use Python 3.11/Django 5.2/PostgreSQL 15 and standalone
 `mysite.settings_auth_test`; they never resolve deployed credentials. Run:
 
 ```bash
-rtk proxy python manage.py test myapp.test_auth_security myapp.test_service_auth myapp.test_data_copy myapp.test_throttle myapp.test_private_routes myapp.test_fastapi_routes myapp.test_proxy_address myapp.test_fixture_and_jobs --settings=mysite.settings_auth_test --noinput
+rtk proxy python manage.py test myapp.test_auth_security myapp.test_data_copy myapp.test_fastapi_routes myapp.test_private_routes myapp.test_service_auth myapp.test_throttle myapp.test_proxy_address myapp.test_fixture_and_jobs myapp.test_source_integration myapp.test_grounded_retention myapp.test_private_copy_integration myapp.test_grounded_migration myapp.test_request_fences myapp.test_rag_orm_integration myapp.longitudinal_tests.test_actual_auth myapp.longitudinal_tests.test_core myapp.longitudinal_tests.test_copy_contract --settings=mysite.settings_auth_test --noinput
 rtk proxy python manage.py makemigrations --check --dry-run --settings=mysite.settings_auth_test
+rtk proxy python manage.py test myapp.longitudinal_tests.test_api myapp.longitudinal_tests.test_services myapp.longitudinal_tests.test_core myapp.longitudinal_tests.test_copy_contract --settings=myapp.longitudinal_tests.settings --noinput
+rtk proxy python -m unittest discover -s rag_tests
 ```
 
-47 tests pass, including separate-connection transaction lock checks. Chat's
-`test_security.py` passes four tests with its unchanged requirements. Production
-configuration and the isolated Compose config pass checks. Actual partial export
-copy/replay/digest/rollback was rehearsed privately in a disposable DB, destroyed
-afterward. Fresh image build, interactive combined browser QA, complete source
-export and real account provisioning remain separate prerequisites.
+The actual-auth PostgreSQL aggregate has 112 distinct tests, including separate-connection
+expiry/lock checks and production analyzer/tracker/serving with synthetic
+provider boundaries. The independent longitudinal suite has 50 tests (21 overlap
+the aggregate); pure RAG regressions have 35. Chat's ten security tests use its
+unchanged requirements in a separate environment. No provider is called.
+
+The actual partial export copy/replay/digest/rollback was rehearsed privately in
+a disposable database. New tests rehearse pre-0021 ledgers, reverse-migration
+refusal and changed-record rollback rejection. Full combined browser QA, complete
+source database/files/index inventory, fresh coordinated images and action-time
+approval for real account provisioning remain prerequisites for live use. No
+live migration, persistent account provisioning or deployment occurred.

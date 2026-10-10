@@ -10,3 +10,4 @@ class OwnerContext:
     auth_user_id: int
     is_staff: bool
     login_deadline: datetime
+    session_key: str | None = None

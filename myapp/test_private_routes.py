@@ -1,6 +1,9 @@
 from myapp import test_auth_security
-from myapp.models import Analysis, JournalEntry, CumulativeAnalysis, CustomQuestion, WorkflowExecution, AnalysisFeedback
+from myapp.models import Analysis, JournalEntry, CumulativeAnalysis, CustomQuestion, WorkflowExecution, WorkflowStep, AnalysisFeedback
 from django.test import TestCase
+from django.utils import timezone
+from myapp.security.contracts import OwnerContext
+from myapp.security.analysis_input import analysis_input
 
 
 class PrivateRouteTests(TestCase):
@@ -44,12 +47,31 @@ class PrivateRouteTests(TestCase):
             self.assertEqual(response.status_code,400)
 
     def test_feedback_preferences_handle_all_targets_and_ignore_invalid_legacy_links(self):
+        session = self.client.get('/api/auth/session/').json()
+        owner = OwnerContext(self.mine.pk, self.mine.auth_user_id, False,
+            timezone.datetime.fromisoformat(session['loginDeadline']), self.client.session.session_key)
+        entry = JournalEntry.objects.create(user=self.mine, content='synthetic current owned input')
+        _, _, capture = analysis_input(owner, [entry.pk], with_snapshot=True)
+        analysis = Analysis.objects.create(user=self.mine, entry=entry, mood='joy', color='pink',
+            summary='synthetic current summary', interpretation='synthetic current interpretation', subject='synthetic',
+            doctor_personality='own-style', grounding_metadata={'source_snapshot': capture})
+        entry.analysis = analysis; entry.save(update_fields=['analysis'])
         cumulative = CumulativeAnalysis.objects.create(user=self.mine, analysis='synthetic own cumulative',
             doctor_personality='own-style', weights={'dream': 0.7})
         question = CustomQuestion.objects.create(user=self.mine, question='synthetic own question',
             answer='synthetic own answer', doctor_personality='own-style', weights={'dream': 0.6})
-        for relation, target in [('cumulative_analysis', cumulative), ('custom_question', question)]:
+        for target in (cumulative, question):
+            workflow = WorkflowExecution.objects.create(user=self.mine, accepted_auth_user_id=self.mine.auth_user_id,
+                status='completed', workflow_type='synthetic', routine_name='synthetic current workflow',
+                source_metadata=capture, analysis_id=str(target.pk))
+            WorkflowStep.objects.create(execution=workflow, step_number=1, name='synthetic final step',
+                step_type='answer_generation', status='completed', output_data={'coverage': {'source_dependencies': capture['sources']}})
+            target.workflow_execution = workflow; target.save(update_fields=['workflow_execution'])
+        for relation, target in [('analysis', analysis), ('cumulative_analysis', cumulative), ('custom_question', question)]:
             AnalysisFeedback.objects.create(user=self.mine, **{relation: target}, rating='good')
+        historical = CustomQuestion.objects.create(user=self.mine, is_historical=True,
+            question='synthetic old question', answer='synthetic old answer', doctor_personality='historical-style')
+        AnalysisFeedback.objects.create(user=self.mine, custom_question=historical, rating='good')
         AnalysisFeedback.objects.create(user=self.mine, rating='bad', comment='synthetic orphan')
         AnalysisFeedback.objects.create(user=self.mine, analysis=self.analysis, rating='bad', comment='synthetic invalid link')
         for path in ['/api/feedback/preferences/', '/api/feedback/recommendations/', '/api/feedback/stats/']:
@@ -57,5 +79,6 @@ class PrivateRouteTests(TestCase):
             self.assertEqual(response.status_code, 200, path)
             self.assertNotIn(b'foreign', response.content, path)
         preferences = self.client.get('/api/feedback/preferences/').json()
-        self.assertEqual(preferences['preferred_doctors'], {'own-style': {'liked': 2, 'disliked': 0}})
+        self.assertEqual(preferences['preferred_doctors'], {'own-style': {'liked': 3, 'disliked': 0}})
+        self.assertEqual(self.client.get('/api/feedback/stats/').json()['total_feedback'], 3)
         self.assertEqual(self.client.get('/api/feedback/recommendations/').json()['suggested_doctor'], 'own-style')

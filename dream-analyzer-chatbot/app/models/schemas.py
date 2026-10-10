@@ -1,16 +1,16 @@
-from pydantic import BaseModel
-from typing import Dict, Any, List, Optional
+from pydantic import BaseModel, Field
+from typing import Dict, Any, List, Optional, Literal
 from datetime import datetime
 from enum import Enum
 
 class ChatMessage(BaseModel):
-    role: str  # "user" or "assistant"
-    content: str
+    role: Literal['user', 'assistant']
+    content: str = Field(max_length=10000)
     timestamp: Optional[datetime] = None
 
 class ChatRequest(BaseModel):
-    message: str
-    conversation_history: Optional[List[ChatMessage]] = []
+    message: str = Field(min_length=1, max_length=10000)
+    conversation_history: List[ChatMessage] = Field(default_factory=list, max_length=100)
 
 class UIEventType(str, Enum):
     dream_staged = "dream_staged"

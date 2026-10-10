@@ -35,6 +35,8 @@ def owner_write(owner, write):
     def checked_write(profile):
         if profile.pk != owner.domain_user_id:
             raise ConfigurationRequired("approved_owner_contract_mismatch")
+        if getattr(owner, 'session_key', None):
+            security().validate_request_session(owner)
         return write()
     return security().owned_atomic_write(owner_id=owner.domain_user_id,
         expected_auth_user_id=owner.auth_user_id, workflow_id=None,

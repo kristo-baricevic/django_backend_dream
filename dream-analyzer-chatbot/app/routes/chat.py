@@ -13,7 +13,9 @@ async def message(payload: ChatRequest, request: Request):
     api = APIClient(request.headers)
     try:
         await api.client.validate()
-        result = await DreamAgent(api).process_message(payload.message, payload.conversation_history or [])
+        # Browser histories have no server-stamped source/settings provenance.
+        # Each turn starts from the current user message and freshly owned tools.
+        result = await DreamAgent(api).process_message(payload.message, [])
         await api.client.validate()  # discard a response after logout/expiry during generation
         return ChatResponse(message=result['text'], timestamp=datetime.now(), ui_events=result.get('ui_events', []))
     except HTTPException:
@@ -33,7 +35,7 @@ async def stream(payload: ChatRequest, request: Request):
         raise
     async def generate():
         try:
-            async for chunk in DreamAgent(api).stream_response(payload.message, payload.conversation_history or []):
+            async for chunk in DreamAgent(api).stream_response(payload.message, []):
                 await api.client.validate()
                 yield 'data: ' + json.dumps({'content': chunk, 'done': False}) + '\n\n'
             yield 'data: ' + json.dumps({'content': '', 'done': True}) + '\n\n'

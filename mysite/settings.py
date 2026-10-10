@@ -32,6 +32,9 @@ ALLOWED_HOSTS = [value for value in os.environ.get("DJANGO_ALLOWED_HOSTS", "loca
 if not ALLOWED_HOSTS or "*" in ALLOWED_HOSTS:
     raise ImproperlyConfigured("Explicit allowed hosts required")
 CORS_ALLOW_CREDENTIALS = True
+from corsheaders.defaults import default_headers
+CORS_ALLOW_HEADERS = (*default_headers, 'x-dream-principal', 'x-dream-session')
+CORS_EXPOSE_HEADERS = ['X-Dream-Principal']
 CORS_ALLOWED_ORIGINS = [value for value in os.environ.get("DREAM_BROWSER_ORIGINS", "http://localhost:3100" if LOCAL else "").split(",") if value]
 CSRF_TRUSTED_ORIGINS = CORS_ALLOWED_ORIGINS
 DREAM_ENABLE_LOCAL_FIXTURE = os.environ.get("DREAM_ENABLE_LOCAL_FIXTURE") == "1"

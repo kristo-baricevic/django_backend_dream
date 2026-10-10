@@ -23,8 +23,8 @@ class OwnerSessionMiddleware:
         if private or private_admin:
             try:
                 request.dream_owner = require_owner(request)
-            except APIException:
-                return JsonResponse({'detail': 'Authentication required.'}, status=401,
+            except APIException as error:
+                return JsonResponse({'detail': 'Authentication required.'}, status=403 if error.status_code == 403 else 401,
                                     headers={'Cache-Control': 'no-store, private'})
         response = self.get_response(request)
         attempts = getattr(request, '_dream_admin_attempts', None)

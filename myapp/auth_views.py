@@ -6,9 +6,11 @@ from django.views.decorators.csrf import csrf_protect
 from django.views.decorators.http import require_GET, require_POST
 from rest_framework.exceptions import APIException
 from myapp.models import User
-from .security.owner import require_owner, _valid_profile
+from .security.owner import require_owner, _valid_profile, validate_request_session
 from .security.throttle import reserve, finish, LoginLimited
 from .security.client_address import login_address
+from .security.owner import initialize_settings, owned_atomic_write
+from .security.freshness import lock_state, revision, settings_digest
 
 
 def _reply(payload, status=200):
@@ -18,11 +20,21 @@ def _reply(payload, status=200):
     return response
 
 
-def _principal(request):
+def _principal(request, *, new_login=False):
     owner = require_owner(request)
+    initialize_settings(owner, new_login=new_login)
+    def read(profile):
+        # A newly rotated login is persisted by SessionMiddleware after this
+        # response. Every existing-session read rechecks its stored auth hash.
+        if not new_login:
+            validate_request_session(owner)
+        return {'revision': revision(profile), 'settings_digest': settings_digest(owner)}
+    fence = owned_atomic_write(owner_id=owner.domain_user_id, expected_auth_user_id=owner.auth_user_id,
+        workflow_id=None, lock_state=lock_state,
+        write=read)
     return {'user': {'id': str(owner.domain_user_id), 'username': request.user.username,
                      'isAdmin': owner.is_staff}, 'csrfToken': get_token(request),
-            'authUserId': owner.auth_user_id, 'loginDeadline': owner.login_deadline.isoformat()}
+            'authUserId': owner.auth_user_id, 'loginDeadline': owner.login_deadline.isoformat(), 'contextFence': fence}
 
 
 @require_GET
@@ -60,7 +72,7 @@ def sign_in(request):
     if not valid:
         return _reply({'detail': 'Invalid login.'}, 401)
     login(request, user)
-    return _reply(_principal(request))
+    return _reply(_principal(request, new_login=True))
 
 
 @require_GET

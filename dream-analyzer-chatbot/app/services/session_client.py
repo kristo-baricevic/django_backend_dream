@@ -1,13 +1,14 @@
 """Per-request fixed-origin credential forwarding; no database/signing secrets."""
 from urllib.parse import urlsplit
 import httpx
+import json
 from fastapi import HTTPException
 from app.config import settings
 
 
 class SessionClient:
     def __init__(self, headers):
-        self.headers = {name: headers[name] for name in ('cookie', 'x-csrftoken', 'origin', 'referer', 'host') if name in headers}
+        self.headers = {name: headers[name] for name in ('cookie', 'x-csrftoken', 'origin', 'referer', 'host', 'x-dream-principal', 'x-dream-session') if name in headers}
         self.backends = (settings.DJANGO_API_URL.rstrip('/'), settings.DREAM_ANALYZER_URL.rstrip('/'))
         for value in self.backends:
             parsed = urlsplit(value)
@@ -28,7 +29,17 @@ class SessionClient:
         if response.status_code != 200:
             raise HTTPException(503, 'Authentication unavailable.')
         data = response.json()
-        principal = (data['user']['id'], data['authUserId'], data['loginDeadline'])
+        if ((self.headers.get('x-dream-principal') is not None and self.headers['x-dream-principal'] != data['user']['id'])
+                or (self.headers.get('x-dream-session') is not None and self.headers['x-dream-session'] != data['loginDeadline'])):
+            raise HTTPException(401, 'Authentication required.')
+        fence = data.get('contextFence')
+        if (not isinstance(fence, dict) or set(fence) != {'revision', 'settings_digest'}
+                or not isinstance(fence['revision'], dict) or set(fence['revision']) != {'source', 'privacy', 'review'}
+                or any(type(v) is not int or v < 0 for v in fence['revision'].values())
+                or not isinstance(fence['settings_digest'], str) or len(fence['settings_digest']) != 64):
+            raise HTTPException(503, 'Private context validation unavailable.')
+        principal = (data['user']['id'], data['authUserId'], data['loginDeadline'],
+                     json.dumps(data.get('contextFence'), sort_keys=True, separators=(',', ':')))
         if self.principal is not None and self.principal != principal:
             raise HTTPException(401, 'Authentication required.')
         self.principal = principal

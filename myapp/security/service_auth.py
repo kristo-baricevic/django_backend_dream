@@ -44,7 +44,7 @@ def _validate(method, headers, scheme, address):
 
 async def authenticate_service_request(request: Request):
     headers = {name: request.headers[name] for name in (
-        'cookie', 'x-csrftoken', 'origin', 'referer', 'host') if name in request.headers}
+        'cookie', 'x-csrftoken', 'origin', 'referer', 'host', 'x-dream-principal', 'x-dream-session') if name in request.headers}
     try:
         return await run_in_threadpool(_validate, request.method, headers,
                                       request.scope['scheme'], request.client.host if request.client else '')

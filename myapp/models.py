@@ -42,6 +42,7 @@ class WorkflowExecution(models.Model):
     analysis_id = models.CharField(max_length=255, null=True, blank=True)
     accepted_auth_user_id = models.PositiveBigIntegerField(null=True, blank=True, editable=False)
     is_historical = models.BooleanField(default=False, editable=False)
+    source_metadata = models.JSONField(default=dict, editable=False)
 
     # Results
     final_result = models.TextField(null=True, blank=True)
@@ -117,7 +118,7 @@ class Analysis(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-    entry = models.OneToOneField('JournalEntry', related_name='entry_analysis', on_delete=models.CASCADE) 
+    entry = models.ForeignKey('JournalEntry', related_name='analysis_versions', on_delete=models.CASCADE)
     user = models.ForeignKey('User', related_name='analyses', on_delete=models.CASCADE, null=True, blank=True)
     mood = models.CharField(max_length=255)
     summary = models.TextField()
@@ -129,6 +130,8 @@ class Analysis(models.Model):
     doctor_personality = models.TextField(blank=True, default='')
     weights = models.JSONField(default=dict)
     symbols = models.JSONField(default=list)
+    grounding_metadata = models.JSONField(default=dict, editable=False)
+    is_historical = models.BooleanField(default=False, editable=False)
     
     class Meta:
         indexes = [models.Index(fields=['user'])]
@@ -141,6 +144,7 @@ class CumulativeAnalysis(models.Model):
     analysis = models.TextField()
     doctor_personality = models.TextField(blank=True, default='')
     weights = models.JSONField(default=dict)
+    is_historical = models.BooleanField(default=False, editable=False)
     workflow_execution = models.ForeignKey(
             WorkflowExecution, 
             on_delete=models.SET_NULL, 
@@ -161,6 +165,7 @@ class CustomQuestion(models.Model):
     weights = models.JSONField(default=dict)
     answer = models.TextField()
     doctor_personality = models.TextField(blank=True, default='')
+    is_historical = models.BooleanField(default=False, editable=False)
 
     workflow_execution = models.ForeignKey(
         WorkflowExecution, 
@@ -307,6 +312,7 @@ class DataCopyRecord(models.Model):
     source_id = models.UUIDField()
     destination_id = models.UUIDField()
     digest = models.CharField(max_length=64)
+    digest_version = models.PositiveSmallIntegerField(default=2, editable=False)
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=['run', 'model_label', 'source_id'],

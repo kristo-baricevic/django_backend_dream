@@ -10,8 +10,41 @@ from django.http import Http404
 from rest_framework.exceptions import NotAuthenticated, PermissionDenied, ValidationError
 from myapp.models import User, Settings, JournalEntry, WorkflowExecution
 from .contracts import OwnerContext
+from django.contrib.auth import load_backend
+from django.utils import timezone as django_timezone
+from django.utils.crypto import constant_time_compare
 
 DEADLINE_KEY = 'dream_login_deadline'
+
+
+def validate_request_session(owner):
+    """Revalidate and lock the initiating Django session through response/commit.
+
+    Logout deletion waits for this row lock. Password changes serialize on the
+    existing auth lock and invalidate the session auth hash immediately.
+    Durable accepted jobs deliberately have no session key and use account and
+    source revocation instead; public request callers must carry a key.
+    """
+    from django.contrib.sessions.models import Session
+    session = Session.objects.select_for_update().filter(
+        session_key=owner.session_key, expire_date__gt=django_timezone.now()).first()
+    now = django_timezone.now()
+    if session is None or session.expire_date <= now or owner.login_deadline <= now:
+        raise PermissionDenied('Request session unavailable.')
+    data = session.get_decoded()
+    backend = data.get('_auth_user_backend')
+    if backend not in settings.AUTHENTICATION_BACKENDS or str(data.get('_auth_user_id')) != str(owner.auth_user_id):
+        raise PermissionDenied('Request session unavailable.')
+    auth = load_backend(backend).get_user(owner.auth_user_id)
+    if auth is None or not auth.is_active:
+        raise PermissionDenied('Request session unavailable.')
+    hashes = [auth.get_session_auth_hash(), *auth.get_session_auth_fallback_hash()]
+    stored = data.get('_auth_user_hash', '')
+    deadline = data.get(DEADLINE_KEY)
+    if (not isinstance(stored, str) or not any(constant_time_compare(stored, value) for value in hashes)
+            or type(deadline) not in {int, float} or not isfinite(deadline)
+            or deadline != owner.login_deadline.timestamp()):
+        raise PermissionDenied('Request session unavailable.')
 
 
 def _valid_profile(profile, auth_user):
@@ -36,8 +69,17 @@ def require_owner(request):
     profile = User.objects.filter(auth_user_id=auth.pk).first()
     if profile is None or not _valid_profile(profile, auth):
         deny()
+    # Reject-only intent hints keep a stale browser tab from sending one
+    # account's private input with a different account's switched cookie.
+    # Cookies and the linked active account remain the sole authority.
+    if not request.path.rstrip('/').endswith('/auth/login'):
+        principal_hint = request.headers.get('X-Dream-Principal')
+        session_hint = request.headers.get('X-Dream-Session')
+        if ((principal_hint is not None and principal_hint != str(profile.pk))
+                or (session_hint is not None and session_hint != datetime.fromtimestamp(deadline, timezone.utc).isoformat())):
+            raise PermissionDenied('Session changed. Reload and try again.')
     return OwnerContext(profile.pk, auth.pk, auth.is_staff,
-                        datetime.fromtimestamp(deadline, timezone.utc))
+                        datetime.fromtimestamp(deadline, timezone.utc), request.session.session_key)
 
 
 def owned_queryset(model, owner):
@@ -87,8 +129,10 @@ def effective_settings(owner, *, for_update=False):
     return row
 
 
-def initialize_settings(owner):
+def initialize_settings(owner, *, new_login=False):
     def create(profile):
+        if owner.session_key and not new_login:
+            validate_request_session(owner)
         if profile.active_settings_id:
             return effective_settings(owner, for_update=True)
         if Settings.objects.filter(user_id=profile.pk).exists():

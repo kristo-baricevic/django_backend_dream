@@ -19,9 +19,17 @@ from django.utils.dateparse import parse_date
 from rest_framework.views import APIView
 from django.db import connection
 from collections import Counter
+from .security.freshness import (eligible_queryset, result_current, private_read,
+    private_read_method, PrivateReadMixin, lock_state, require_source_ticket,
+    require_snapshot, content_hash, StaleSource)
+from .security.freshness import eligible_feedback
+from .longitudinal.services import invalidate_longitudinal
+from .longitudinal_models import EntryAuditPreference
+from rest_framework.exceptions import APIException, ValidationError
+from .security.owner import validate_request_session
 
 
-class SettingsListView(ListAPIView):
+class SettingsListView(PrivateReadMixin, ListAPIView):
     queryset = Settings.objects.all()
     serializer_class = SettingsSerializer
 
@@ -39,11 +47,12 @@ class SettingsUpdateView(UpdateAPIView):
     def perform_update(self, serializer):
         owner = require_owner(self.request)
         def update(profile):
+            validate_request_session(owner)
             row = initialize_settings(owner)
             serializer.instance = Settings.objects.select_for_update().get(pk=row.pk, user=profile)
             serializer.save(user=profile)
         owned_atomic_write(owner_id=owner.domain_user_id, expected_auth_user_id=owner.auth_user_id,
-                           workflow_id=None, write=update)
+                           workflow_id=None, lock_state=lock_state, write=update)
 
     def get_serializer(self, *args, **kwargs):
         kwargs['partial'] = True
@@ -52,6 +61,10 @@ class SettingsUpdateView(UpdateAPIView):
     def post(self, request, *args, **kwargs):
         return self.update(request, *args, **kwargs)
 
+    @private_read_method
+    def update(self, request, *args, **kwargs):
+        return super().update(request, *args, **kwargs)
+
 
 class JournalEntryPagination(PageNumberPagination):
     page_size = 3
@@ -59,7 +72,7 @@ class JournalEntryPagination(PageNumberPagination):
     max_page_size = 100
     page_query_param = 'page'
 
-class JournalEntryListView(ListAPIView):
+class JournalEntryListView(PrivateReadMixin, ListAPIView):
     serializer_class = JournalEntrySerializer
     pagination_class = JournalEntryPagination
     permission_classes = [IsAuthenticated]
@@ -80,12 +93,16 @@ class JournalEntryListView(ListAPIView):
         if entries:
             qs = qs.filter(content__icontains=entries)
         if title:
+            qs = qs.filter(analysis__in=eligible_queryset(Analysis, require_owner(self.request), include_historical=False))
             qs = qs.filter(analysis__subject__icontains=title)
         if moods:
+            qs = qs.filter(analysis__in=eligible_queryset(Analysis, require_owner(self.request), include_historical=False))
             qs = qs.filter(analysis__mood__icontains=moods)
         if symbols:
+            qs = qs.filter(analysis__in=eligible_queryset(Analysis, require_owner(self.request), include_historical=False))
             qs = qs.filter(analysis__symbols__icontains=symbols)
         if analysis:
+            qs = qs.filter(analysis__in=eligible_queryset(Analysis, require_owner(self.request), include_historical=False))
             qs = qs.filter(analysis__summary__icontains=analysis)
 
         if start_date:
@@ -100,8 +117,9 @@ class JournalEntryListView(ListAPIView):
         return qs
 
 class MoodListView(ListAPIView):
+    @private_read_method
     def get(self, request):
-        qs = owned_queryset(Analysis, require_owner(request))
+        qs = eligible_queryset(Analysis, require_owner(request), include_historical=False)
         moods = list(
             qs.values('mood', 'color')
             .order_by('mood', 'color')
@@ -116,13 +134,13 @@ class CumulativeAnalysisPagination(PageNumberPagination):
     max_page_size = 100
     page_query_param = 'page'
 
-class CumulativeAnalysisListView(ListAPIView):
+class CumulativeAnalysisListView(PrivateReadMixin, ListAPIView):
     serializer_class = CumulativeAnalysisSerializer
     pagination_class = CumulativeAnalysisPagination
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        qs = owned_queryset(CumulativeAnalysis, require_owner(self.request)).order_by('-created_at')
+        qs = eligible_queryset(CumulativeAnalysis, require_owner(self.request)).order_by('-created_at')
         
         # if self.request.user and self.request.user.is_authenticated:
         #     qs = qs.filter(user=self.request.user)
@@ -158,13 +176,13 @@ class CustomQuestionPagination(PageNumberPagination):
     page_query_param = 'page'
 
 
-class CustomQuestionListView(ListAPIView):
+class CustomQuestionListView(PrivateReadMixin, ListAPIView):
     serializer_class = CustomQuestionSerializer
     pagination_class = CustomQuestionPagination
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        qs = owned_queryset(CustomQuestion, require_owner(self.request)).order_by('-created_at')
+        qs = eligible_queryset(CustomQuestion, require_owner(self.request)).order_by('-created_at')
         
         # if self.request.user and self.request.user.is_authenticated:
         #     qs = qs.filter(user=self.request.user)
@@ -195,41 +213,24 @@ class CustomQuestionListView(ListAPIView):
 class SymbolsListView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @private_read_method
     def get(self, request):
-        table = Analysis._meta.db_table
-        with connection.cursor() as cur:
-            cur.execute(f"""
-                WITH s_text AS (
-                  SELECT jsonb_array_elements_text(symbols) AS sym
-                  FROM {table}
-                  WHERE user_id=%s AND jsonb_typeof(symbols)='array'
-                ),
-                s_obj AS (
-                  SELECT elem->>'symbol' AS sym
-                  FROM {table}
-                  CROSS JOIN LATERAL jsonb_array_elements(symbols) AS elem
-                  WHERE user_id=%s AND jsonb_typeof(symbols)='array' AND jsonb_typeof(elem)='object' AND elem ? 'symbol'
-                ),
-                s AS (
-                  SELECT sym FROM s_text
-                  UNION ALL
-                  SELECT sym FROM s_obj
-                )
-                SELECT sym, COUNT(*) AS cnt
-                FROM s
-                WHERE sym IS NOT NULL AND sym <> ''
-                GROUP BY sym
-                ORDER BY cnt DESC, sym ASC;
-            """, [require_owner(request).domain_user_id] * 2)
-            rows = cur.fetchall()
-        return Response([{"symbol": r[0], "count": r[1]} for r in rows])
+        counts = Counter()
+        for symbols in eligible_queryset(Analysis, require_owner(request), include_historical=False).values_list('symbols', flat=True):
+            for symbol in symbols if isinstance(symbols, list) else []:
+                value = symbol.get('symbol') if isinstance(symbol, dict) else symbol
+                if isinstance(value, str) and value:
+                    counts[value] += 1
+        return Response([{'symbol': name, 'count': count}
+                         for name, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))])
 
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
+@private_read
 def get_data(request):
     if request.user.is_authenticated:
-        analyses = Analysis.objects.filter(user_id=require_owner(request).domain_user_id).order_by('created_at')
+        analyses = eligible_queryset(Analysis, require_owner(request), include_historical=False).order_by('created_at')
     else:
         analyses = owned_queryset(Analysis, require_owner(request)).order_by('created_at')
     
@@ -240,16 +241,18 @@ def get_data(request):
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
+@private_read
 def get_entries(request):
     if request.user.is_authenticated:
         entries = JournalEntry.objects.filter(user_id=require_owner(request).domain_user_id).order_by('-created_at')
     else:
         entries = owned_queryset(JournalEntry, require_owner(request)).order_by('-created_at')
-    serializer = JournalEntrySerializer(entries, many=True)
+    serializer = JournalEntrySerializer(entries, many=True, context={'request': request})
     return Response(serializer.data)
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
+@private_read
 def get_entry(request, id):
     try:
         if request.user.is_authenticated:
@@ -260,7 +263,7 @@ def get_entry(request, id):
     except JournalEntry.DoesNotExist:
         return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
     
-    serializer = JournalEntrySerializer(entry)
+    serializer = JournalEntrySerializer(entry, context={'request': request})
     return Response(serializer.data)
 
 @api_view(['POST'])
@@ -270,23 +273,43 @@ def create_entry(request):
     serializer = JournalEntrySerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     def create(profile):
+        validate_request_session(owner)
         return serializer.save(user=profile)
     row = owned_atomic_write(owner_id=owner.domain_user_id, expected_auth_user_id=owner.auth_user_id,
                              workflow_id=None, write=create)
-    return Response(JournalEntrySerializer(row).data, status=201)
+    return Response(JournalEntrySerializer(row, context={'request': request}).data, status=201)
 
 
 @api_view(['PUT', 'PATCH'])
 @permission_classes([IsAuthenticated])
 def update_entry(request, id):
     owner = require_owner(request)
+    def fence(profile):
+        lock_state(profile)
+        entry = require_owned_object(JournalEntry, owner, id, for_update=True)
+        require_source_ticket(request, owner, entry, 'update')
     def update(profile):
         row = require_owned_object(JournalEntry, owner, id, for_update=True)
         serializer = JournalEntrySerializer(row, data=request.data, partial=request.method == 'PATCH')
         serializer.is_valid(raise_exception=True)
+        content = serializer.validated_data.get('content', row.content)
+        if content == row.content:
+            if row.analysis_id and (row.analysis.grounding_metadata == {} or not result_current(row.analysis, owner)):
+                row.analysis = None
+                row.save(update_fields=['analysis'])
+            return row  # Preserve revision/timestamps/reviews on a no-op save.
+        origin = request.data.get('source_origin', 'unknown')
+        if origin not in {'unknown', 'synthetic'}:
+            raise ValidationError('Invalid source origin.')
+        invalidate_longitudinal(profile.pk, 'source_saved', entry_id=row.pk)
+        if row.analysis_id:
+            Analysis.objects.filter(pk=row.analysis_id, user=profile).update(grounding_metadata={'invalidated': True})
+            row.analysis = None
+        EntryAuditPreference.objects.update_or_create(user=profile, entry=row,
+            defaults={'included': False, 'origin': origin, 'language': 'unknown', 'independent_occurrence': False})
         return serializer.save()
     row = owned_atomic_write(owner_id=owner.domain_user_id, expected_auth_user_id=owner.auth_user_id,
-                             workflow_id=None, write=update)
+                             workflow_id=None, lock_state=fence, write=update)
     # The external work is outside the transaction; the result gets a fresh guarded commit.
     if row.analysis_id is None and getattr(runtime_settings, 'DREAM_ANALYZER_URL', ''):
         try:
@@ -298,33 +321,55 @@ def update_entry(request, id):
                     'Host': request.get_host()}.items() if value}, allow_redirects=False, timeout=30)
             if response.status_code == 200:
                 result = response.json()
+                if not isinstance(result, dict) or not isinstance(result.get('coverage'), dict):
+                    raise ValueError('Invalid analysis payload.')
                 def save_analysis(profile):
+                    validate_request_session(owner)
                     entry = require_owned_object(JournalEntry, owner, id, for_update=True)
                     if entry.content != row.content or entry.analysis_id is not None:
                         return entry
+                    snapshot = result.get('source_snapshot')
+                    require_snapshot(snapshot, owner)
+                    expected = [{'entry_id': str(entry.pk), 'content_hash': content_hash(entry.content)}]
+                    if result.get('coverage', {}).get('source_dependencies') != expected or snapshot['sources'] != expected:
+                        raise StaleSource()
                     fields = {key: result[key] for key in ('mood', 'summary', 'color', 'interpretation',
                         'negative', 'subject', 'sentiment_score', 'doctor_personality', 'weights', 'symbols')}
-                    entry.analysis = Analysis.objects.create(entry=entry, user=profile, **fields)
+                    metadata = {key: result.get(key) for key in ('coverage', 'claims', 'evidence', 'provenance',
+                        'calibration_status', 'semantic_support', 'span_status')}
+                    metadata['source_snapshot'] = snapshot
+                    entry.analysis = Analysis.objects.create(entry=entry, user=profile, grounding_metadata=metadata, **fields)
                     entry.save(update_fields=['analysis', 'updated_at'])
                     return entry
                 row = owned_atomic_write(owner_id=owner.domain_user_id, expected_auth_user_id=owner.auth_user_id,
-                                         workflow_id=None, write=save_analysis)
-        except (requests.RequestException, ValueError, KeyError):
+                                         workflow_id=None, lock_state=lock_state, write=save_analysis)
+        except (requests.RequestException, ValueError, KeyError, APIException):
             pass  # Saved draft remains available for retry; private response bodies are never logged.
-    return Response(JournalEntrySerializer(row).data)
+    def serialize(profile):
+        validate_request_session(owner)
+        return Response(JournalEntrySerializer(require_owned_object(JournalEntry, owner, id), context={'request': request}).data)
+    return owned_atomic_write(owner_id=owner.domain_user_id, expected_auth_user_id=owner.auth_user_id,
+        workflow_id=None, lock_state=lock_state,
+        write=serialize)
 
 
 @api_view(['DELETE'])
 @permission_classes([IsAuthenticated])
 def delete_entry(request, id):
     owner = require_owner(request)
+    def fence(profile):
+        lock_state(profile)
+        require_source_ticket(request, owner, require_owned_object(JournalEntry, owner, id, for_update=True), 'delete')
     def delete(profile):
-        require_owned_object(JournalEntry, owner, id, for_update=True).delete()
+        entry = require_owned_object(JournalEntry, owner, id, for_update=True)
+        invalidate_longitudinal(profile.pk, 'source_deleted', entry_id=entry.pk)
+        entry.delete()
     owned_atomic_write(owner_id=owner.domain_user_id, expected_auth_user_id=owner.auth_user_id,
-                       workflow_id=None, write=delete)
+                       workflow_id=None, lock_state=fence, write=delete)
     return Response(status=204)
 
 @require_http_methods(["GET"])
+@private_read
 def get_workflow_execution(request, workflow_id):
     """Get workflow execution details"""
     try:
@@ -332,6 +377,8 @@ def get_workflow_execution(request, workflow_id):
             WorkflowExecution.objects.prefetch_related('steps__citations'),
             id=workflow_id, user_id=require_owner(request).domain_user_id
         )
+        if not result_current(execution, require_owner(request)):
+            raise Http404
 
         # if execution.workflow_type == "custom-question":
         #     analysis_id = str(execution.analysis_id) if execution.analysis_id else None
@@ -370,10 +417,12 @@ def get_workflow_execution(request, workflow_id):
                 'tokens_used': step.tokens_used,
                 'error': step.error,
                 'citations': citations_data,
+                'output_data': step.output_data,
             })
         
         data = {
             'id': str(execution.id),
+            'source_validation': 'historical_unvalidated' if execution.is_historical else 'current',
             'workflow_type': execution.workflow_type,
             'routine_name': execution.routine_name,
             'status': execution.status,
@@ -410,24 +459,28 @@ def submit_feedback(request):
         return Response({'detail': 'Invalid feedback.'}, status=400)
     model, relation = targets[kind]
     def write(profile):
+        validate_request_session(owner)
         target = require_owned_object(model, owner, request.data.get('analysis_id'), for_update=True)
+        if not result_current(target, owner):
+            raise Http404
         return AnalysisFeedback.objects.update_or_create(**{relation: target, 'user': profile},
             defaults={'rating': rating, 'comment': comment, 'accuracy': details.get('accuracy'),
                       'relevance': details.get('relevance'), 'helpful': details.get('helpful'), 'session_id': ''})
     feedback, created = owned_atomic_write(owner_id=owner.domain_user_id, expected_auth_user_id=owner.auth_user_id,
-                                           workflow_id=None, write=write)
+                                           workflow_id=None, lock_state=lock_state, write=write)
     return Response({'success': True, 'feedback_id': str(feedback.pk), 'created': created})
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
+@private_read
 def get_feedback_stats(request):
     """Get feedback statistics for improvement"""
     from django.db.models import Count, Q
     
     stats = {
-        'total_feedback': owned_queryset(AnalysisFeedback, require_owner(request)).count(),
-        'good_ratings': owned_queryset(AnalysisFeedback, require_owner(request)).filter(rating='good').count(),
-        'bad_ratings': owned_queryset(AnalysisFeedback, require_owner(request)).filter(rating='bad').count(),
+        'total_feedback': eligible_feedback(require_owner(request)).count(),
+        'good_ratings': eligible_feedback(require_owner(request)).filter(rating='good').count(),
+        'bad_ratings': eligible_feedback(require_owner(request)).filter(rating='bad').count(),
         
         # By doctor personality
         'by_doctor': {},
@@ -437,7 +490,7 @@ def get_feedback_stats(request):
     }
     
     # Stats by doctor personality
-    for analysis in owned_queryset(Analysis, require_owner(request)).filter(feedback__user_id=require_owner(request).domain_user_id).distinct():
+    for analysis in eligible_queryset(Analysis, require_owner(request), include_historical=False).filter(feedback__user_id=require_owner(request).domain_user_id).distinct():
         doctor = analysis.doctor_personality
         if doctor not in stats['by_doctor']:
             stats['by_doctor'][doctor] = {'good': 0, 'bad': 0}
@@ -449,7 +502,7 @@ def get_feedback_stats(request):
             stats['by_doctor'][doctor]['bad'] += 1
     
     # Get recent bad feedback with comments
-    recent_bad = owned_queryset(AnalysisFeedback, require_owner(request)).filter(
+    recent_bad = eligible_feedback(require_owner(request)).filter(
         rating='bad',
         comment__isnull=False
     ).exclude(comment='').order_by('-created_at')[:10]
@@ -468,14 +521,16 @@ def get_feedback_stats(request):
     return Response(stats)
 
 @api_view(['GET'])
+@private_read
 def get_user_preferences(request):
     from .feedback_analyzer import FeedbackAnalyzer
     analyzer = FeedbackAnalyzer()
-    prefs = analyzer.get_user_preferences(require_owner(request).domain_user_id)
+    prefs = analyzer.get_user_preferences(require_owner(request).domain_user_id, owner=require_owner(request))
     return Response(prefs)
 
 @api_view(['GET'])
+@private_read
 def get_user_recommendations(request):
     from .feedback_analyzer import PersonalizationHelper
-    recs = PersonalizationHelper.get_user_recommendations(require_owner(request).domain_user_id)
+    recs = PersonalizationHelper.get_user_recommendations(require_owner(request).domain_user_id, owner=require_owner(request))
     return Response(recs)

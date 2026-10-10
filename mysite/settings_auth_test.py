@@ -8,13 +8,17 @@ DREAM_ENV = 'test'
 DREAM_ENABLE_LOCAL_FIXTURE = False
 ALLOWED_HOSTS = ['testserver', 'localhost', '127.0.0.1']
 CSRF_TRUSTED_ORIGINS = ['http://testserver']
-CORS_ALLOWED_ORIGINS = ['http://testserver']
+CORS_ALLOWED_ORIGINS = ['http://testserver', 'http://localhost:3100']
+from corsheaders.defaults import default_headers
+CORS_ALLOW_HEADERS = (*default_headers, 'x-dream-principal', 'x-dream-session')
+CORS_EXPOSE_HEADERS = ['X-Dream-Principal']
 INSTALLED_APPS = [
     'django.contrib.admin', 'django.contrib.auth', 'django.contrib.contenttypes',
     'django.contrib.sessions', 'django.contrib.messages', 'django.contrib.staticfiles',
-    'rest_framework', 'myapp',
+    'rest_framework', 'corsheaders', 'myapp',
 ]
 MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',

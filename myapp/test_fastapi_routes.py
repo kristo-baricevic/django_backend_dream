@@ -61,3 +61,9 @@ class AnalyzerRouteTests(TransactionTestCase):
         self.assertEqual(self.request('GET','/workflows/'+str(row.pk)).status_code,404)
         self.client.post('/api/auth/logout/',HTTP_X_CSRFTOKEN=self.headers['x-csrftoken'])
         self.assertEqual(self.request('GET','/personalities').status_code,401)
+
+    def test_old_tab_principal_and_login_hints_block_draft_before_service(self):
+        for hint in ({'x-dream-principal': str(self.foreign.user_id)}, {'x-dream-session': 'synthetic old login'}):
+            response = self.request('POST', '/analyze', {'content': 'synthetic other account draft'}, self.headers | hint)
+            self.assertEqual(response.status_code, 401)
+        self.assertFalse(self.calls)

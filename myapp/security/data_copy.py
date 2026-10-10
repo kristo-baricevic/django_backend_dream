@@ -8,10 +8,16 @@ from django.db import connection, transaction
 from django.utils.dateparse import parse_datetime
 from myapp.models import (User, JournalEntry, Analysis, CumulativeAnalysis, CustomQuestion,
     Settings, WorkflowExecution, WorkflowStep, StepCitation, AnalysisFeedback, DataCopyRun, DataCopyRecord)
+from myapp.models import DreamReflection, LongitudinalState
+from myapp.longitudinal.copy_contract import COPY_POLICY, inspect_private_inventory, selected_reflection_plan
+from myapp.longitudinal.core import InvalidEvidence
+from django.apps import apps
+from django.contrib.auth import get_user_model
 
 MODELS = {'entries': JournalEntry, 'analyses': Analysis, 'cumulative': CumulativeAnalysis,
           'questions': CustomQuestion, 'settings': Settings, 'workflows': WorkflowExecution,
-          'steps': WorkflowStep, 'citations': StepCitation, 'feedback': AnalysisFeedback}
+          'steps': WorkflowStep, 'citations': StepCitation, 'feedback': AnalysisFeedback,
+          'longitudinal_reflections': DreamReflection}
 ALIASES = {'doctorPersonality': 'doctor_personality', 'doctorImage': 'doctor_image',
            'personality': 'personality_type', 'medicalHistory': 'medical_history', 'influence': 'weights'}
 RELATIONS = {'analysis': 'analyses', 'entry': 'entries', 'workflow_execution': 'workflows',
@@ -41,6 +47,14 @@ def guard_destination():
 
 
 def inspect_bundle(bundle, *, partial=False):
+    known_owner_models = {model._meta.label for model in MODELS.values()} | set(COPY_POLICY)
+    actual_owner_models = {model._meta.label for model in apps.get_models()
+        if any(field.name == 'user' and field.is_relation and field.related_model is User
+               for field in model._meta.concrete_fields)}
+    if actual_owner_models - known_owner_models:
+        raise CopyError('Unknown private model: a reviewed copy policy is required.')
+    if isinstance(bundle, dict) and 'longitudinal_reflections' in bundle:
+        raise CopyError('Authored reflections require the explicit private selection adapter.')
     if not isinstance(bundle, dict) or set(bundle) - set(MODELS):
         raise CopyError('Unknown resource: a reviewed adapter is required.')
     if not {'entries', 'analyses', 'cumulative', 'questions', 'settings'} <= set(bundle):
@@ -84,7 +98,7 @@ def inspect_bundle(bundle, *, partial=False):
         entry = entries.get(str(row.get('entry')))
         linked = entry.get('analysis') if entry else None
         if isinstance(linked, dict): linked = linked.get('id')
-        if entry is None or (linked is not None and str(linked) != str(row['id'])):
+        if entry is None:
             raise CopyError('Entry/analysis relationship mismatch.')
         if entry.get('user') != row.get('user'): raise CopyError('Mixed source ownership in linked records.')
     for entry in entries.values():
@@ -97,9 +111,36 @@ def inspect_bundle(bundle, *, partial=False):
     return {'counts': counts, 'manifest_digest': digest(bundle), 'partial': True, 'unresolved_coverage': PARTIAL_MISSING}
 
 
-def copy_bundle(bundle, *, owner_id, key, source_identity, selected_settings_id=None, partial=False, dry_run=True):
+def inspect_private_bundle(value, owner_id, bundle):
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != {'model_labels', 'index_namespaces', 'source_owner_id', 'selected_reflection_ids', 'reflections'}:
+        raise CopyError('Invalid private inventory/selection manifest.')
+    try:
+        policy = inspect_private_inventory(value['model_labels'], value['index_namespaces'])
+        if set(value['model_labels']) != set(COPY_POLICY):
+            raise CopyError('Complete fourteen-model private inventory is required.')
+        # Validate selection, ownership and entry expansion even during dry run.
+        entry_map = {str(row['id']): row['id'] for row in bundle['entries']}
+        plan = selected_reflection_plan(value['reflections'], selected_ids=value['selected_reflection_ids'],
+            source_owner_id=value['source_owner_id'], target_owner_id=owner_id,
+            copy_run_id=UUID(int=0), entry_map=entry_map)
+        owners = {str(row.get('user')) for rows in bundle.values() for row in rows if row.get('user') is not None}
+        if owners and owners != {str(UUID(str(value['source_owner_id'])))}:
+            raise CopyError('Private and base source owners differ.')
+    except (InvalidEvidence, KeyError, TypeError, ValueError) as error:
+        raise CopyError('Private selection requires a reviewed complete owned export.') from None
+    return policy | {'selected_count': len(plan)}
+
+
+def copy_bundle(bundle, *, owner_id, key, source_identity, selected_settings_id=None, partial=False, dry_run=True, private_bundle=None):
     guard_destination()
     report = inspect_bundle(bundle, partial=partial)
+    private_plan = inspect_private_bundle(private_bundle, owner_id, bundle)
+    if private_plan is not None:
+        report['private_policies'] = private_plan['policies']
+        report['counts']['longitudinal_reflections'] = private_plan['selected_count']
+        report['manifest_digest'] = digest({'base': bundle, 'private': private_bundle, 'policies': private_plan['policies']})
     if len(bundle['settings']) > 1 and not selected_settings_id:
         raise CopyError('Explicit settings selection required; every version will be copied.')
     if selected_settings_id is None and bundle['settings']:
@@ -110,7 +151,14 @@ def copy_bundle(bundle, *, owner_id, key, source_identity, selected_settings_id=
         if not User.objects.filter(pk=owner_id).exists(): raise CopyError('Destination owner required.')
         return report
     with transaction.atomic():
+        auth_id = User.objects.get(pk=owner_id).auth_user_id
+        if auth_id is not None:
+            get_user_model().objects.select_for_update().get(pk=auth_id)
         profile = User.objects.select_for_update().get(pk=owner_id)
+        state, _ = LongitudinalState.objects.get_or_create(user=profile)
+        state = LongitudinalState.objects.select_for_update().get(pk=state.pk)
+        if private_plan is not None and any((state.enabled, state.provider_processing, state.provider_context, state.use_confirmed_context)):
+            raise CopyError('Private copy requires a fresh disabled destination; existing consent is never overwritten.')
         existing = DataCopyRun.objects.select_for_update().filter(key=key).first()
         if existing:
             if existing.owner_id != profile.pk or existing.manifest_digest != report['manifest_digest'] or existing.source_identity != source_identity:
@@ -132,7 +180,7 @@ def copy_bundle(bundle, *, owner_id, key, source_identity, selected_settings_id=
                 timestamps = {}
                 for name, value in source.items():
                     name = ALIASES.get(name, name)
-                    if name in {'id', 'user', 'doctor', 'accepted_auth_user_id', 'session_id'}: continue
+                    if name in {'id', 'user', 'doctor', 'accepted_auth_user_id', 'session_id', 'grounding_metadata', 'source_metadata'}: continue
                     if name in {'created_at', 'updated_at', 'start_time', 'end_time'}:
                         if value is not None:
                             parsed = parse_datetime(value)
@@ -148,6 +196,8 @@ def copy_bundle(bundle, *, owner_id, key, source_identity, selected_settings_id=
                     else:
                         values[name] = value
                 if any(field.name == 'user' for field in model._meta.concrete_fields): values['user'] = profile
+                if label in {'analyses', 'cumulative', 'questions'}:
+                    values['is_historical'] = True
                 if label == 'workflows':
                     values.update(is_historical=True, accepted_auth_user_id=None)
                     if values.get('analysis_id'):
@@ -161,6 +211,26 @@ def copy_bundle(bundle, *, owner_id, key, source_identity, selected_settings_id=
                 DataCopyRecord.objects.create(run=run, model_label=label, source_id=source['id'], destination_id=row.pk, digest='')
         for entry_id, analysis_id in deferred:
             JournalEntry.objects.filter(pk=entry_id, user=profile).update(analysis_id=analysis_id)
+        if private_plan is not None:
+            try:
+                reflection_plan = selected_reflection_plan(private_bundle['reflections'],
+                    selected_ids=private_bundle['selected_reflection_ids'], source_owner_id=private_bundle['source_owner_id'],
+                    target_owner_id=profile.pk, copy_run_id=run.pk,
+                    entry_map={source_id: destination for (label, source_id), destination in mapped.items() if label == 'entries'})
+            except (InvalidEvidence, ValueError, TypeError, KeyError):
+                raise CopyError('Private reflection selection changed.') from None
+            for planned in reflection_plan:
+                values = dict(planned['destination'])
+                timestamps = {name: values.pop(name) for name in ('created_at', 'updated_at')}
+                if values['entry_id'] is not None and not JournalEntry.objects.filter(pk=values['entry_id'], user=profile).exists():
+                    raise CopyError('Destination reflection entry is unavailable.')
+                row = DreamReflection.objects.create(**values)
+                DreamReflection.objects.filter(pk=row.pk, user=profile).update(**timestamps)
+                row.refresh_from_db()
+                if digest(snapshot(row)) != planned['digest']:
+                    raise CopyError('Private reflection copy digest differs from the reviewed plan.')
+                DataCopyRecord.objects.create(run=run, model_label='longitudinal_reflections',
+                    source_id=planned['source_id'], destination_id=row.pk, digest=planned['digest'])
         for record in run.records.all():
             record.digest = digest(snapshot(MODELS[record.model_label].objects.get(pk=record.destination_id)))
             record.save(update_fields=['digest'])
@@ -177,8 +247,12 @@ def reconcile(run):
     records = list(run.records.all())
     counts = {}
     for record in records:
+        if record.model_label not in MODELS:
+            raise CopyError('Unknown copy ledger model.')
         row = MODELS[record.model_label].objects.filter(pk=record.destination_id).first()
-        if row is None or digest(snapshot(row)) != record.digest:
+        if (record.digest_version != 2 or row is None
+                or (hasattr(row, 'user_id') and row.user_id != run.owner_id)
+                or digest(snapshot(row)) != record.digest):
             raise CopyError('Copied record was removed or changed; manual reconciliation required.')
         counts[record.model_label] = counts.get(record.model_label, 0) + 1
     expected = {key: value for key, value in run.counts.items() if value}
@@ -191,7 +265,12 @@ def rollback(run_id):
     with transaction.atomic():
         # Account row serializes app mutations with rollback.
         owner_id = DataCopyRun.objects.get(pk=run_id).owner_id
+        auth_id = User.objects.get(pk=owner_id).auth_user_id
+        if auth_id is not None:
+            get_user_model().objects.select_for_update().get(pk=auth_id)
         profile = User.objects.select_for_update().get(pk=owner_id)
+        LongitudinalState.objects.get_or_create(user=profile)
+        LongitudinalState.objects.select_for_update().get(user=profile)
         run = DataCopyRun.objects.select_for_update().get(pk=run_id, owner=profile)
         if run.state == 'rolled_back': return {'state': run.state}
         if run.state != 'copied': raise CopyError('Run cannot be rolled back.')
@@ -214,7 +293,7 @@ def rollback(run_id):
             raise CopyError('Active settings changed; rollback refused.')
         profile.active_settings_id = run.settings_preimage
         profile.save(update_fields=['active_settings'])
-        for label in ('feedback', 'citations', 'steps', 'cumulative', 'questions', 'entries', 'analyses', 'workflows', 'settings'):
+        for label in ('feedback', 'citations', 'steps', 'cumulative', 'questions', 'longitudinal_reflections', 'entries', 'analyses', 'workflows', 'settings'):
             MODELS[label].objects.filter(pk__in=grouped[label]).delete()
         run.state = 'rolled_back'; run.save(update_fields=['state'])
         return {'state': run.state, 'counts': run.counts}
