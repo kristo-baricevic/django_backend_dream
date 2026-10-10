@@ -311,3 +311,12 @@ class DataCopyRecord(models.Model):
     class Meta:
         constraints = [models.UniqueConstraint(fields=['run', 'model_label', 'source_id'],
                                               name='unique_copy_source_record')]
+
+
+# Parent integrates this explicit bottom import after the auth-owned model changes.
+from .longitudinal_models import (  # noqa: F401, E402
+    ObservationSuppression,
+    LongitudinalState, EntryAuditPreference, DreamReflection, EntryAudit,
+    DreamObservation, ThemeRecord, ThemeReview, ThemeMerge, ThemeMergeMember,
+    ProfileSnapshot, SnapshotSource, AuditRun, AuditRunEntry,
+)
