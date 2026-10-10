@@ -1,10 +1,12 @@
 from rest_framework import serializers
 from .models import Analysis, JournalEntry, CumulativeAnalysis, CustomQuestion, Settings
+from .security.settings_validation import validate_settings
 
 class AnalysisSerializer(serializers.ModelSerializer):
     class Meta:
         model = Analysis
         fields = '__all__'
+        read_only_fields = ['user', 'entry', 'id', 'created_at', 'updated_at']
 
 
 class JournalEntrySerializer(serializers.ModelSerializer):
@@ -13,21 +15,26 @@ class JournalEntrySerializer(serializers.ModelSerializer):
     class Meta:
         model = JournalEntry
         fields = '__all__'
+        read_only_fields = ['user', 'analysis', 'id', 'created_at', 'updated_at']
 
 class CumulativeAnalysisSerializer(serializers.ModelSerializer):
     class Meta:
         model = CumulativeAnalysis
         fields = ['id', 'created_at', 'updated_at', 'user', 'analysis', 'doctor_personality', 'weights']
-        read_only_fields = ['id', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at', 'user']
 
 
 class CustomQuestionSerializer(serializers.ModelSerializer):
     class Meta:
         model = CustomQuestion
         fields = ['id', 'created_at', 'updated_at', 'user', 'question', 'answer', 'doctor_personality', 'weights']
-        read_only_fields = ['id', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at', 'user']
 
 class SettingsSerializer(serializers.ModelSerializer):
+    def validate(self, attrs):
+        validate_settings(attrs)
+        return attrs
+
     doctorPersonality = serializers.CharField(source='doctor_personality')
     doctorImage = serializers.CharField(source='doctor_image')
     personality = serializers.CharField(

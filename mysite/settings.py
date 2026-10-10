@@ -16,43 +16,61 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
-# Quick-start development settings - unsuitable for production
-# See https://docs.djangoproject.com/en/4.2/howto/deployment/checklist/
+import os
+from django.core.exceptions import ImproperlyConfigured
+from urllib.parse import urlsplit
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-k0g_lhhqk$!w+(#a6et@zmgfory4d*4qf*%33l4pe@8&5_j!@s'
-
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
-
-ALLOWED_HOSTS = [
-    "dream-journal-app.com",
-    "www.dream-journal-app.com",
-    "dream-app-nu.vercel.app",
-    "localhost",
-    "127.0.0.1",
-    "104.236.96.193",
-    "django"
-]
-
+DREAM_ENV = os.environ.get("DREAM_ENV", "production")
+if DREAM_ENV not in {"local", "test", "production"}:
+    raise ImproperlyConfigured("Invalid DREAM_ENV")
+LOCAL = DREAM_ENV in {"local", "test"}
+SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "")
+if len(SECRET_KEY) < 50:
+    raise ImproperlyConfigured("DJANGO_SECRET_KEY must contain at least 50 characters")
+DEBUG = LOCAL and os.environ.get("DJANGO_DEBUG") == "1"
+ALLOWED_HOSTS = [value for value in os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1" if LOCAL else "").split(",") if value]
+if not ALLOWED_HOSTS or "*" in ALLOWED_HOSTS:
+    raise ImproperlyConfigured("Explicit allowed hosts required")
 CORS_ALLOW_CREDENTIALS = True
-
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:3000",
-    "https://dream-journal-app.com",
-    "https://www.dream-journal-app.com",
-    "https://dream-app-nu.vercel.app",
-]
-
-CSRF_TRUSTED_ORIGINS = [
-    "http://localhost:3000",
-    "https://dream-journal-app.com",
-    "https://www.dream-journal-app.com",
-    "https://dream-app-nu.vercel.app",
-    'https://104.236.96.193',
-    'http://104.236.96.193',
-]
-
+CORS_ALLOWED_ORIGINS = [value for value in os.environ.get("DREAM_BROWSER_ORIGINS", "http://localhost:3100" if LOCAL else "").split(",") if value]
+CSRF_TRUSTED_ORIGINS = CORS_ALLOWED_ORIGINS
+DREAM_ENABLE_LOCAL_FIXTURE = os.environ.get("DREAM_ENABLE_LOCAL_FIXTURE") == "1"
+if DREAM_ENABLE_LOCAL_FIXTURE and DREAM_ENV != "local":
+    raise ImproperlyConfigured("Local fixtures are forbidden outside local development")
+if DREAM_ENABLE_LOCAL_FIXTURE and (set(ALLOWED_HOSTS) - {'localhost', '127.0.0.1', '[::1]'} or
+        any(urlsplit(value).hostname not in {'localhost', '127.0.0.1', '::1'} for value in CORS_ALLOWED_ORIGINS)):
+    raise ImproperlyConfigured("Weak local fixtures require loopback hosts and origins")
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SECURE = not LOCAL
+SESSION_COOKIE_SAMESITE = "Lax"
+SESSION_EXPIRE_AT_BROWSER_CLOSE = True
+SESSION_COOKIE_AGE = 8 * 60 * 60
+CSRF_COOKIE_HTTPONLY = True
+CSRF_COOKIE_SECURE = not LOCAL
+CSRF_COOKIE_SAMESITE = "Lax"
+SESSION_SAVE_EVERY_REQUEST = False
+SECURE_SSL_REDIRECT = not LOCAL
+SECURE_HSTS_SECONDS = 31536000 if not LOCAL else 0
+SECURE_HSTS_INCLUDE_SUBDOMAINS = not LOCAL
+SECURE_HSTS_PRELOAD = not LOCAL
+SECURE_CONTENT_TYPE_NOSNIFF = True
+X_FRAME_OPTIONS = "DENY"
+# Set only when the deployment proxy overwrites this header and is trusted.
+if os.environ.get("DREAM_TRUST_PROXY_TLS") == "1":
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+DREAM_ANALYZER_URL = os.environ.get("DREAM_ANALYZER_URL", "")
+if not LOCAL and DREAM_ANALYZER_URL and urlsplit(DREAM_ANALYZER_URL).scheme != 'https':
+    raise ImproperlyConfigured('Production analyzer URL requires HTTPS')
+DREAM_LOGIN_PROXY_CIDRS = [value for value in os.environ.get('DREAM_LOGIN_PROXY_CIDRS',
+    '127.0.0.0/8,::1/128' if LOCAL else '').split(',') if value]
+if not LOCAL and not DREAM_LOGIN_PROXY_CIDRS:
+    raise ImproperlyConfigured('Declare the trusted frontend proxy network explicitly')
+from ipaddress import ip_network
+for cidr in DREAM_LOGIN_PROXY_CIDRS:
+    if ip_network(cidr).prefixlen == 0: raise ImproperlyConfigured('Universal proxy trust is forbidden')
+DREAM_ACCEPT_VERIFIED_CLIENT_IP = os.environ.get('DREAM_ACCEPT_VERIFIED_CLIENT_IP') == '1'
+REST_FRAMEWORK = {"DEFAULT_AUTHENTICATION_CLASSES": ["rest_framework.authentication.SessionAuthentication"],
+                  "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"]}
 
 # Application definition
 
@@ -75,6 +93,7 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'myapp.security.middleware.OwnerSessionMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
@@ -101,45 +120,16 @@ TEMPLATES = [
 WSGI_APPLICATION = 'mysite.wsgi.application'
 
 
-# Database
-# https://docs.djangoproject.com/en/4.2/ref/settings/#databases
-
-##local docker startup
-##LOCAL
-# DATABASES = {
-#     'default': {
-#         'ENGINE': 'django.db.backends.postgresql',
-#         'NAME': 'dreamdb',
-#         'USER': 'dreamuser',
-#         'PASSWORD': 'dreampass',
-#         'HOST': 'db',
-#         'PORT': '5432',
-#     }
-# }
-
-#local manual startup
-# DATABASES = {
-#     'default': {
-#         'ENGINE': 'django.db.backends.postgresql',
-#         'NAME': 'dreamdb',
-#         'USER': 'dreamuser',
-#         'PASSWORD': 'password123',
-#         'HOST': '127.0.0.1',
-#         'PORT': '5432',
-#     }
-# }
-
-##DEPLOYMENT
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'dreamdb',
-        'USER': 'dreamuser',
-        'PASSWORD': 'dreampass',
-        'HOST': 'db',
-        'PORT': '5432',
-    }
-}
+DATABASES = {"default": {
+    "ENGINE": "django.db.backends.postgresql",
+    "NAME": os.environ.get("POSTGRES_DB", "dream_auth_local" if LOCAL else ""),
+    "USER": os.environ.get("POSTGRES_USER", ""),
+    "PASSWORD": os.environ.get("POSTGRES_PASSWORD", ""),
+    "HOST": os.environ.get("POSTGRES_HOST", "127.0.0.1"),
+    "PORT": os.environ.get("POSTGRES_PORT", "55432" if LOCAL else "5432"),
+}}
+if not DATABASES["default"]["NAME"] or not DATABASES["default"]["USER"]:
+    raise ImproperlyConfigured("Explicit database name and user required")
 
 # Password validation
 # https://docs.djangoproject.com/en/4.2/ref/settings/#auth-password-validators

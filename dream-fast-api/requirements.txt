@@ -10,10 +10,10 @@ tiktoken>=0.5.2
 numpy>=1.24.3
 pydantic>=2.5.0
 pypdf==4.0.1
-Django>=4.2,<4.3
-djangorestframework
-django-cors-headers
-psycopg2-binary
+Django==5.2.18
+djangorestframework==3.16.1
+django-cors-headers==4.9.0
+psycopg2-binary==2.9.11
 asgiref
 spacy>=3.0.0
 https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.0/en_core_web_sm-3.7.0-py3-none-any.whl

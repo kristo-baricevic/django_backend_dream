@@ -18,6 +18,9 @@ import openai
 from asgiref.sync import sync_to_async
 from myapp.models import CumulativeAnalysis, CustomQuestion, DoctorProfile
 from core.workflow_tracker import WorkflowTracker
+from myapp.security.jobs import async_job_write, current_job
+from django.utils import timezone as django_timezone
+from myapp.security.settings_validation import reference_path, SIGNS, PERSONALITIES as SAFE_PERSONALITIES, DOCTORS
 import re
 from dataclasses import dataclass
 import spacy
@@ -136,22 +139,21 @@ class AstrologyKnowledgeBase:
         if not sign:
             return ""
             
-        file_path = os.path.join(
-            self.base_directory, 
-            f"{sign_type}_signs", 
-            f"{sign.lower()}.txt"
-        )
+        if sign_type not in {'sun', 'moon', 'rising'}:
+            raise ValueError('Invalid reference category')
+        from pathlib import Path
+        file_path = reference_path(Path(self.base_directory).parent, f'astrology/{sign_type}_signs', sign)
         
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 content = f.read()
-                print(f"✅ Loaded {sign_type} sign: {sign}")
+                pass  # private payload logging removed
                 return content
         except FileNotFoundError:
-            print(f"⚠️  Astrology file not found: {file_path}")
+            pass  # private payload logging removed
             return ""
         except Exception as e:
-            print(f"❌ Error reading astrology file: {e}")
+            pass  # private payload logging removed
             return ""
     
     def get_full_chart_context(self, sun: str = None, moon: str = None, rising: str = None) -> str:
@@ -177,7 +179,7 @@ class AstrologyKnowledgeBase:
             return ""
         
         combined = "\n\n".join(contexts)
-        print(f"📊 Assembled astrology context: {len(combined)} characters")
+        pass  # private payload logging removed
         return combined
 
 class PersonalityKnowledgeBase:
@@ -190,21 +192,19 @@ class PersonalityKnowledgeBase:
         if not personality_type:
             return ""
         
-        file_path = os.path.join(
-            self.base_directory,
-            f"{personality_type.upper()}.txt"
-        )
+        from pathlib import Path
+        file_path = reference_path(Path(self.base_directory).parent, 'personality', personality_type)
         
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 content = f.read()
-                print(f"✅ Loaded personality type: {personality_type}")
+                pass  # private payload logging removed
                 return content
         except FileNotFoundError:
-            print(f"⚠️  Personality file not found: {file_path}")
+            pass  # private payload logging removed
             return ""
         except Exception as e:
-            print(f"❌ Error reading personality file: {e}")
+            pass  # private payload logging removed
             return ""
 
 class DreamKnowledgeBase:
@@ -220,10 +220,10 @@ class DreamKnowledgeBase:
         
         if os.path.exists(index_path):
             if self._should_rebuild():  # ← ADD THIS CHECK
-                print("📦 Files changed - rebuilding vectorstore...")
+                pass  # private payload logging removed
                 await self.build_knowledge_base()
             else:
-                print("✅ Loading existing vectorstore...")
+                pass  # private payload logging removed
                 try:
                     self.vectorstore = FAISS.load_local(
                         self.vector_directory, 
@@ -231,10 +231,10 @@ class DreamKnowledgeBase:
                         allow_dangerous_deserialization=True
                     )
                 except Exception as e:
-                    print(f"Failed to load, rebuilding: {e}")
+                    pass  # private payload logging removed
                     await self.build_knowledge_base()
         else:
-            print("🔨 Building new vectorstore...")
+            pass  # private payload logging removed
             await self.build_knowledge_base()
     
     def _should_rebuild(self) -> bool:
@@ -256,7 +256,7 @@ class DreamKnowledgeBase:
                     
                     # Check if modified
                     if os.path.getmtime(file_path) > index_time:
-                        print(f"🆕 Detected newer file: {file}")
+                        pass  # private payload logging removed
                         return True
         
         # Check if files were deleted by comparing count
@@ -267,7 +267,7 @@ class DreamKnowledgeBase:
                 # Rough estimate: each file creates ~5-10 chunks
                 expected_chunks = len(current_files) * 7  # Average
                 if abs(stored_count - expected_chunks) > len(current_files):  # Significant difference
-                    print(f"🗑️  Detected file count mismatch - rebuilding")
+                    pass  # private payload logging removed
                     return True
             except:
                 pass
@@ -277,7 +277,7 @@ class DreamKnowledgeBase:
     async def build_knowledge_base(self):
         """Process PDFs and text files to create FAISS index."""
         if not os.path.exists(self.files_directory):
-            print(f"Knowledge directory {self.files_directory} not found")
+            pass  # private payload logging removed
             return
             
         documents = []
@@ -303,10 +303,10 @@ class DreamKnowledgeBase:
             documents.extend(txt_docs)
             
             if not documents:
-                print("No PDFs or text files found in knowledge base directory")
+                pass  # private payload logging removed
                 return
                 
-            print(f"Found {len(pdf_docs)} PDFs and {len(txt_docs)} text files")
+            pass  # private payload logging removed
             
             # Split documents into chunks
             text_splitter = RecursiveCharacterTextSplitter(
@@ -322,10 +322,10 @@ class DreamKnowledgeBase:
             # Save to disk
             os.makedirs(self.vector_directory, exist_ok=True)
             self.vectorstore.save_local(self.vector_directory)
-            print(f"Knowledge base created with {len(chunks)} chunks from {len(documents)} files")
+            pass  # private payload logging removed
             
         except Exception as e:
-            print(f"Error building knowledge base: {e}")
+            pass  # private payload logging removed
     
     async def search_relevant_knowledge(self, query: str, k: int = 3) -> List[Document]:
         """Search with diversity using MMR."""
@@ -342,7 +342,7 @@ class DreamKnowledgeBase:
         
         if results:
             sources = [d.metadata.get('source', 'unknown') for d in results]
-            print(f"✅ Found {len(results)} documents: {sources}")
+            pass  # private payload logging removed
         
         return results
 
@@ -413,42 +413,42 @@ class DreamJournalAnalyzer:
 
     async def enhanced_knowledge_search(self, entries: List[JournalEntry]) -> List[Document]:
         """Multi-stage search pipeline for better knowledge retrieval."""
-        print(f"\n=== ENHANCED KNOWLEDGE SEARCH PIPELINE ===")
+        pass  # private payload logging removed
         all_knowledge_docs = []
         
         # Stage 1: Extract themes and search for specific symbols
-        print(f"Stage 1: Extracting and searching dream themes...")
+        pass  # private payload logging removed
         dream_themes = await self.symbol_extractor.extract_dream_elements(entries)
-        print(f"Extracted themes: {dream_themes}")
+        pass  # private payload logging removed
         theme_docs = await self.knowledge_base.search_relevant_knowledge(dream_themes, k=2)
         all_knowledge_docs.extend(theme_docs)
-        print(f"Found {len(theme_docs)} theme-based documents")
+        pass  # private payload logging removed
         
         # Stage 2: Search with raw dream content  
-        print(f"Stage 2: Searching with combined dream content...")
+        pass  # private payload logging removed
         combined_content = " ".join([entry.content for entry in entries])
         content_search = combined_content[:500]  # Limit to avoid too long queries
         content_docs = await self.knowledge_base.search_relevant_knowledge(content_search, k=2)
         all_knowledge_docs.extend(content_docs)
-        print(f"Found {len(content_docs)} content-based documents")
+        pass  # private payload logging removed
         
         # Stage 3: Targeted searches for different aspects
-        print(f"Stage 3: Targeted searches for emotions and symbols...")
+        pass  # private payload logging removed
         
         emotion_search = "fear anxiety joy sadness anger dream emotions psychological feelings mood"
         emotion_docs = await self.knowledge_base.search_relevant_knowledge(emotion_search, k=1)
         all_knowledge_docs.extend(emotion_docs)
-        print(f"Found {len(emotion_docs)} emotion-focused documents")
+        pass  # private payload logging removed
         
         symbol_search = "flying water animals death birth transformation symbols meaning interpretation significance"  
         symbol_docs = await self.knowledge_base.search_relevant_knowledge(symbol_search, k=1)
         all_knowledge_docs.extend(symbol_docs)
-        print(f"Found {len(symbol_docs)} symbol-focused documents")
+        pass  # private payload logging removed
         
         # Remove duplicates and return
         unique_docs = self.deduplicate_documents(all_knowledge_docs)
-        print(f"After deduplication: {len(unique_docs)} unique documents")
-        print(f"=== END ENHANCED SEARCH PIPELINE ===\n")
+        pass  # private payload logging removed
+        pass  # private payload logging removed
         
         return unique_docs
 
@@ -490,8 +490,8 @@ class DreamJournalAnalyzer:
             "medicalHistory": user_inf.get("medicalHistory", 0.10),
         }
 
-        print(f"user preferences ==== {user_preferences}")
-        print(f"doctor_w ==== {doctor_w}")
+        pass  # private payload logging removed
+        pass  # private payload logging removed
 
         # Blend: doctor_influence controls doctor vs user preferences
         blended = {}
@@ -505,7 +505,7 @@ class DreamJournalAnalyzer:
 
     async def assemble_full_context(self, dream_theory_docs: List[Document], settings: Dict[str, Any] = None, weights: Optional[Dict[str, float]] = None) -> str:
         """Assemble full context WITHOUT truncation - use complete documents"""
-        print("\n=== ASSEMBLING FULL CONTEXT ===")
+        pass  # private payload logging removed
         
         # Build context sections with full content
         context_parts = []
@@ -533,8 +533,8 @@ class DreamJournalAnalyzer:
         
         full = weight_instruction + "\n".join(context_parts)
         
-        print(f"📊 Assembled context: {len(full)} characters")
-        print("=== END CONTEXT ASSEMBLY ===\n")
+        pass  # private payload logging removed
+        pass  # private payload logging removed
         return full
         
     async def comprehensive_knowledge_retrieval(
@@ -545,7 +545,7 @@ class DreamJournalAnalyzer:
         total_k: int = 20
     ) -> Dict:
         """Search with MANDATORY user profile files."""
-        print(f"\n=== KNOWLEDGE RETRIEVAL ===")
+        pass  # private payload logging removed
         
         # Extract user's profile
         user_personality = settings.get('personality', '').upper() if settings else None
@@ -554,7 +554,7 @@ class DreamJournalAnalyzer:
         user_moon = user_astrology.get('moon', '').lower()
         user_rising = user_astrology.get('rising', '').lower()
         
-        print(f"User Profile: {user_personality}, Sun:{user_sun}, Moon:{user_moon}, Rising:{user_rising}")
+        pass  # private payload logging removed
         
         all_docs = []
         seen_content = set()
@@ -572,7 +572,7 @@ class DreamJournalAnalyzer:
                     metadata={"source": f"knowledge_base/personality/{user_personality}.txt", "file_type": "personality"}
                 )
                 all_docs.append(doc)
-                print(f"  🎯 Added: personality/{user_personality}.txt")
+                pass  # private payload logging removed
         
         # FORCE-ADD astrology files
         if user_sun:
@@ -583,7 +583,7 @@ class DreamJournalAnalyzer:
                     metadata={"source": f"knowledge_base/astrology/sun_signs/{user_sun}.txt", "file_type": "astrology"}
                 )
                 all_docs.append(doc)
-                print(f"  🎯 Added: sun_signs/{user_sun}.txt")
+                pass  # private payload logging removed
         
         if user_moon:
             content = astrology_kb.get_sign_context(user_moon, "moon")
@@ -593,7 +593,7 @@ class DreamJournalAnalyzer:
                     metadata={"source": f"knowledge_base/astrology/moon_signs/{user_moon}.txt", "file_type": "astrology"}
                 )
                 all_docs.append(doc)
-                print(f"  🎯 Added: moon_signs/{user_moon}.txt")
+                pass  # private payload logging removed
         
         if user_rising:
             content = astrology_kb.get_sign_context(user_rising, "rising")
@@ -603,7 +603,7 @@ class DreamJournalAnalyzer:
                     metadata={"source": f"knowledge_base/astrology/rising_signs/{user_rising}.txt", "file_type": "astrology"}
                 )
                 all_docs.append(doc)
-                print(f"  🎯 Added: rising_signs/{user_rising}.txt")
+                pass  # private payload logging removed
         
         # Now do normal dream-based retrieval for remaining slots
         dream_elements = await self.symbol_extractor.extract_dream_elements(entries)
@@ -639,13 +639,13 @@ class DreamJournalAnalyzer:
                     
                     # Log why this was retrieved
                     preview = doc.page_content[:150].replace('\n', ' ')
-                    print(f"    ✅ MATCHED by '{query[:40]}...': {source[:50]}")
-                    print(f"       Preview: {preview}...")
+                    pass  # private payload logging removed
+                    pass  # private payload logging removed
                     
                 if len(all_docs) >= total_k:
                     break
         
-        print(f"✅ Retrieved {len(all_docs)} total documents")
+        pass  # private payload logging removed
         
         return {
             "dream_elements": dream_elements,
@@ -758,7 +758,7 @@ class DreamJournalAnalyzer:
         Assemble knowledge base context efficiently.
         Don't truncate individual docs - let them be full passages.
         """
-        print(f"\n=== ASSEMBLING KNOWLEDGE CONTEXT ===")
+        pass  # private payload logging removed
         
         context_parts = ["=== DREAM INTERPRETATION KNOWLEDGE BASE ===\n"]
         current_length = 0
@@ -773,7 +773,7 @@ class DreamJournalAnalyzer:
             
             # Stop if we'd exceed token budget
             if current_length + passage_tokens > max_tokens:
-                print(f"⚠️  Reached token limit, stopping at {docs_included} documents")
+                pass  # private payload logging removed
                 break
             
             # Escape any formatting characters
@@ -785,9 +785,9 @@ class DreamJournalAnalyzer:
         
         context = "\n".join(context_parts)
         
-        print(f"✅ Assembled {docs_included}/{len(knowledge_docs)} documents")
-        print(f"📊 Approx {current_length} tokens")
-        print(f"=== END CONTEXT ASSEMBLY ===\n")
+        pass  # private payload logging removed
+        pass  # private payload logging removed
+        pass  # private payload logging removed
         
         return context
 
@@ -837,7 +837,7 @@ class DreamJournalAnalyzer:
         """
         Validate that the analysis actually uses user-specific context and follows instructions.
         """
-        print(f"\n=== VALIDATING ANALYSIS QUALITY ===")
+        pass  # private payload logging removed
         
         analysis_lower = analysis.lower()
         metrics = {
@@ -855,9 +855,9 @@ class DreamJournalAnalyzer:
             if any(term in analysis_lower for term in personality_terms):
                 metrics["used_personality"] = True
                 metrics["quality_score"] += 2
-                print(f"   ✅ Personality type ({personality}) referenced in analysis")
+                pass  # private payload logging removed
             else:
-                print(f"   ⚠️  Personality type ({personality}) NOT used")
+                pass  # private payload logging removed
         
         # 2. Check if astrology signs were referenced
         if settings and settings.get('astrology'):
@@ -869,9 +869,9 @@ class DreamJournalAnalyzer:
             if signs_mentioned > 0:
                 metrics["used_astrology"] = True
                 metrics["quality_score"] += signs_mentioned
-                print(f"   ✅ Astrology signs used: {signs_mentioned}/{len(signs)}")
+                pass  # private payload logging removed
             else:
-                print(f"   ⚠️  Astrology signs ({signs}) NOT used")
+                pass  # private payload logging removed
         
         # 3. Check for dream-by-dream structure (BAD)
         dream_by_dream_phrases = [
@@ -883,10 +883,10 @@ class DreamJournalAnalyzer:
         if found_sequential:
             metrics["avoided_dream_by_dream"] = False
             metrics["quality_score"] -= 3
-            print(f"   ❌ Dream-by-dream structure detected: {found_sequential[:3]}")
+            pass  # private payload logging removed
         else:
             metrics["quality_score"] += 2
-            print(f"   ✅ Holistic analysis (no dream-by-dream structure)")
+            pass  # private payload logging removed
         
         # 4. Check for depth (mentions psychological themes, not just descriptions)
         depth_indicators = [
@@ -898,29 +898,29 @@ class DreamJournalAnalyzer:
         if depth_count >= 5:
             metrics["has_depth"] = True
             metrics["quality_score"] += 2
-            print(f"   ✅ Analysis has depth ({depth_count} psychological terms)")
+            pass  # private payload logging removed
         else:
-            print(f"   ⚠️  Analysis may be superficial ({depth_count} psychological terms)")
+            pass  # private payload logging removed
         
         # 5. Check length (should be substantial)
         word_count = len(analysis.split())
         if word_count < 200:
             metrics["quality_score"] -= 2
-            print(f"   ⚠️  Analysis too short ({word_count} words)")
+            pass  # private payload logging removed
         elif word_count > 400:
             metrics["quality_score"] += 1
-            print(f"   ✅ Analysis substantial ({word_count} words)")
+            pass  # private payload logging removed
         
-        print(f"   📈 Overall Quality Score: {metrics['quality_score']}/10")
+        pass  # private payload logging removed
         
         if metrics["quality_score"] < 3:
-            print(f"   ❌ POOR QUALITY: Analysis not using user context or following instructions")
+            pass  # private payload logging removed
         elif metrics["quality_score"] < 6:
-            print(f"   ⚠️  MODERATE QUALITY: Some issues with context usage")
+            pass  # private payload logging removed
         else:
-            print(f"   ✅ GOOD QUALITY: Analysis properly using user context")
+            pass  # private payload logging removed
         
-        print(f"=== END VALIDATION ===\n")
+        pass  # private payload logging removed
         
         return metrics
 
@@ -934,7 +934,7 @@ class DreamJournalAnalyzer:
             result = model.invoke(question)
             return result.content
         except Exception as error:
-            print(f'Error in AI generation: {error}')
+            pass  # private payload logging removed
             raise Exception('Failed to generate AI content')
             
     async def analyze_entry(
@@ -954,8 +954,8 @@ class DreamJournalAnalyzer:
 
             # === Load doctor profile & compute final weights ===
             doctor_name = settings.get("doctorPersonality", "Academic") if settings else "Academic"
-            print(f"doctor name === {doctor_name}")
-            print(f"settings === {settings}")
+            pass  # private payload logging removed
+            pass  # private payload logging removed
 
             # Try database first, then fallback to vectorstore profile
             # doctor_profile = await sync_to_async(DoctorProfile.objects.filter(name__iexact=doctor_name).first)()
@@ -965,13 +965,13 @@ class DreamJournalAnalyzer:
             profile = await self._get_doctor_profile(doctor_name)
             profile_weights = profile.weights
 
-            print(f"doctor profile === {profile}")
+            pass  # private payload logging removed
             user_inf = settings.get("influence", {}) if settings else {}
             doctor_influence = settings.get("doctor_influence", 0.5) if settings else 0.5
-            print(f"user_inf === === {user_inf}")
-            print(f"doctor_influence === === {doctor_influence}")
-            print(f"profile_weights === === {profile_weights}")
-            print(f"dream_elements === === {dream_elements}")
+            pass  # private payload logging removed
+            pass  # private payload logging removed
+            pass  # private payload logging removed
+            pass  # private payload logging removed
 
             final_weights = self._compute_final_weights(
                 user_inf=user_inf,
@@ -985,7 +985,7 @@ class DreamJournalAnalyzer:
                 weights=final_weights
             )
 
-            print(f"profile_weights === === {final_weights}")
+            pass  # private payload logging removed
 
             # Doctor’s tone and description
             doctor_intro = f"You are a doctor with the profile type: {profile.name}. Your archetype is {profile.archetype}. Your tone is {profile.tone}. You are a dream analyst. \n{profile.background} \n{profile.prompt_style}\n\n"
@@ -1058,7 +1058,7 @@ class DreamJournalAnalyzer:
             else:
                 symbols = symbols_raw
 
-            print(f"symbols {symbols} symbols raw {symbols_raw} mood {mood}")
+            pass  # private payload logging removed
 
 
             parsed_result = JournalAnalysis(
@@ -1077,7 +1077,7 @@ class DreamJournalAnalyzer:
             return parsed_result
 
         except Exception as error:
-            print(f'❌ Failed to analyze entry: {error}')
+            pass  # private payload logging removed
             raise
 
     def normalize_emotion(self, value: str) -> str:
@@ -1088,9 +1088,9 @@ class DreamJournalAnalyzer:
             return value
         match = get_close_matches(value, valid_values, n=1, cutoff=0.6)
         if match:
-            print(f"⚠️ Approximating emotion '{value}' as '{match[0]}'")
+            pass  # private payload logging removed
             return match[0]
-        print(f"⚠️ No close match for '{value}', defaulting to 'interest'")
+        pass  # private payload logging removed
         return "interest"
 
     async def batch_analyze_entries(self, entries: List[JournalEntry], personality_type: str = "empathetic") -> List[JournalAnalysis]:
@@ -1103,7 +1103,7 @@ class DreamJournalAnalyzer:
                 analysis = await self.analyze_entry(entry.content, personality_type)
                 results.append(analysis)
             except Exception as error:
-                print(f'Failed to analyze entry {entry.id}: {error}')
+                pass  # private payload logging removed
                 # Continue with other entries
                 continue
         return results
@@ -1114,8 +1114,8 @@ class DreamJournalAnalyzer:
         using the knowledge base + dream entries for grounding.
         """
         try:
-            print(f"\n=== REFINEMENT STAGE ===")
-            print(f"Draft length: {len(draft)} characters")
+            pass  # private payload logging removed
+            pass  # private payload logging removed
             
             # Get knowledge context again (so model doesn't drift)
             knowledge_docs = await self.enhanced_knowledge_search(entries)
@@ -1164,11 +1164,11 @@ class DreamJournalAnalyzer:
             )
 
             result = qa_chain.run("Refine the draft interpretation.")
-            print(f"Refinement complete. Length: {len(result)} characters")
+            pass  # private payload logging removed
             return result
 
         except Exception as e:
-            print(f"Error in refinement stage: {e}")
+            pass  # private payload logging removed
             raise
     
     async def qa_analysis_with_workflow(
@@ -1185,7 +1185,7 @@ class DreamJournalAnalyzer:
 
         # Workflow setup
         if existing_workflow_id:
-            execution = await sync_to_async(WorkflowExecution.objects.get)(id=existing_workflow_id)
+            execution = await async_job_write(lambda profile: WorkflowExecution.objects.get(pk=existing_workflow_id, user=profile), existing_workflow_id)
             tracker = WorkflowTracker.__new__(WorkflowTracker)
             tracker.workflow_type = execution.workflow_type
             tracker.routine_name = execution.routine_name
@@ -1207,8 +1207,8 @@ class DreamJournalAnalyzer:
             # Only import if you actually created this model. If not, keep the except.
             from myapp.models import DoctorProfile as DoctorProfileModel  # JSONField 'weights' expected
             doctor_name = (settings or {}).get("doctorPersonality", "Academic")
-            print(f"settings {settings}")
-            print(f"doctor_name {doctor_name}")
+            pass  # private payload logging removed
+            pass  # private payload logging removed
 
             # Try database first
             doctor_profile = await sync_to_async(
@@ -1224,12 +1224,12 @@ class DreamJournalAnalyzer:
                 profile.weights = doctor_profile.weights or {
                     "theory": 0.7, "astrology": 0.15, "personality": 0.15, "medicalHistory": 0.0
                 }
-                print(f"✅ Loaded from DB: {profile.name}")
+                pass  # private payload logging removed
             else:
                 # ✅ Fallback to file
-                print(f"⚠️  Not in DB, loading from file...")
+                pass  # private payload logging removed
                 profile = await self._get_doctor_profile(doctor_name)
-                print(f"✅ Loaded from file: {profile.name} with weights {profile.weights}")
+                pass  # private payload logging removed
         except Exception:
             pass
 
@@ -1238,7 +1238,7 @@ class DreamJournalAnalyzer:
 
         user_inf = (settings or {}).get("influence", {})
         doctor_influence = float((settings or {}).get("doctor_influence", 0.5))
-        print(f"doctor profile {profile.weights}")
+        pass  # private payload logging removed
 
         final_weights = self._compute_final_weights(
             user_inf=user_inf,
@@ -1246,7 +1246,7 @@ class DreamJournalAnalyzer:
             doctor_influence=doctor_influence,
         )
 
-        print(f"🔮Final blended weights for {doctor_name}: {final_weights}")
+        pass  # private payload logging removed
 
         try:
             # STEP 1: Create vectorstore from entries
@@ -1444,28 +1444,23 @@ class DreamJournalAnalyzer:
                 reasoning=f"Quality score: {validation_metrics['quality_score']}"
             )
 
-            # Complete workflow
+            # Save result identity and completion together under the accepted owner.
             total_citations = len(citations) + len(astro_citations)
-            await tracker.complete_workflow(
-                result=result,
-                confidence=0.87,
-                total_citations=total_citations
-            )
-
-            # Save cumulative analysis
             doctor_personality = settings.get('doctorPersonality', '') if settings else ''
-            cumulative = await sync_to_async(CumulativeAnalysis.objects.create, thread_sensitive=True)(
-                user_id=user_id,
-                analysis=result,
-                doctor_personality=doctor_personality,
-                weights=final_weights,
-                workflow_execution_id=workflow_id
-            )
+            def save_cumulative(profile):
+                cumulative = CumulativeAnalysis.objects.create(user=profile, analysis=result,
+                    doctor_personality=doctor_personality, weights=final_weights, workflow_execution_id=workflow_id)
+                WorkflowExecution.objects.filter(pk=workflow_id, user=profile).update(
+                    analysis_id=str(cumulative.pk), status='completed', end_time=django_timezone.now(),
+                    final_result=result, overall_confidence=0.87, total_citations=total_citations)
+                return cumulative
+            cumulative = await async_job_write(save_cumulative, workflow_id)
+
 
             return result, workflow_id
 
         except Exception as error:
-            print(f'❌ Error in QA analysis: {error}')
+            pass  # private payload logging removed
             await tracker.fail_workflow(str(error))
             raise
 
@@ -1488,7 +1483,7 @@ class DreamJournalAnalyzer:
         )
 
         if existing_workflow_id:
-            execution = await sync_to_async(WorkflowExecution.objects.get)(id=existing_workflow_id)
+            execution = await async_job_write(lambda profile: WorkflowExecution.objects.get(pk=existing_workflow_id, user=profile), existing_workflow_id)
             tracker.execution = execution
             workflow_id = existing_workflow_id
         else:
@@ -1512,9 +1507,9 @@ class DreamJournalAnalyzer:
             doctor_w=profile.weights,
             doctor_influence=doctor_influence,
         )
-        print(f"🔮 Final user_inf weights: {user_inf}")
+        pass  # private payload logging removed
 
-        print(f"🔮 Final blended weights for {doctor_name}: {final_weights}")
+        pass  # private payload logging removed
 
         try:
             # STEP 1: Prepare dream entries
@@ -1612,24 +1607,21 @@ class DreamJournalAnalyzer:
                 model="gpt-3.5-turbo"
             )
 
-            # Complete workflow
-            await tracker.complete_workflow(result=result, confidence=0.85)
-
-            # Save CustomQuestion result
             doctor_personality = settings.get('doctorPersonality', '') if settings else ''
-            saved_question = await sync_to_async(CustomQuestion.objects.create)(
-                user_id=user_id,
-                question=question,
-                answer=result,
-                doctor_personality=doctor_personality,
-                weights=final_weights,
-                workflow_execution_id=workflow_id
-            )
+            def save_question(profile):
+                saved = CustomQuestion.objects.create(user=profile, question=question, answer=result,
+                    doctor_personality=doctor_personality, weights=final_weights, workflow_execution_id=workflow_id)
+                WorkflowExecution.objects.filter(pk=workflow_id, user=profile).update(
+                    analysis_id=str(saved.pk), status='completed', end_time=django_timezone.now(),
+                    final_result=result, overall_confidence=0.85)
+                return saved
+            saved_question = await async_job_write(save_question, workflow_id)
+
 
             return result, saved_question.id, workflow_id
 
         except Exception as error:
-            print(f'❌ Error in custom_question_with_workflow: {error}')
+            pass  # private payload logging removed
             await tracker.fail_workflow(str(error))
             raise
    
@@ -1647,8 +1639,8 @@ class DreamJournalAnalyzer:
         
         # Find the Weights: section
         if "Weights:" not in text:
-            print(f"block_match === None (no 'Weights:' found)")
-            print(f"w ==www== {weights}")
+            pass  # private payload logging removed
+            pass  # private payload logging removed
             return weights
         
         # Split text into lines and find weights section
@@ -1673,21 +1665,21 @@ class DreamJournalAnalyzer:
                         weights[key] = float(match.group(1))
                         break
         
-        print(f"block_match === {in_weights_section}")
-        print(f"w ==www== {weights}")
+        pass  # private payload logging removed
+        pass  # private payload logging removed
         return weights
 
         return w
 
     async def _get_doctor_profile(self, name: str) -> DoctorProfile:
         """Load doctor profile directly from file."""
-        file_path = f"knowledge_base/doctor_profiles/{name.lower()}.txt"
+        file_path = reference_path("knowledge_base", "doctor_profiles", name)
         
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 text = f.read()
                 
-            print(f"✅ Loaded doctor profile from: {file_path}")
+            pass  # private payload logging removed
             
             # Parse weights
             weights = self._parse_weights_from_text(text)
@@ -1727,10 +1719,10 @@ class DreamJournalAnalyzer:
             )
             
         except FileNotFoundError:
-            print(f"❌ Doctor profile not found: {file_path}")
+            pass  # private payload logging removed
             raise
         except Exception as e:
-            print(f"❌ Error loading doctor profile: {e}")
+            pass  # private payload logging removed
             raise
             
     async def _build_weighted_context(self, dream: str, weights: Dict[str, float], doctor_profile: DoctorProfile) -> str:
@@ -2061,9 +2053,7 @@ class DreamSymbolExtractor:
             'raw_text_sample': combined_text[:200]  # For context
         }
         
-        print(f"Extracted: {len(result['primary_symbols'])} symbols, "
-              f"{len(result['key_phrases'])} phrases, "
-              f"{len(result['emotions'])} emotions")
+        pass  # private payload logging removed
         
         return result
     
@@ -2079,10 +2069,10 @@ class DreamSymbolExtractor:
     def _match_symbols_with_context(self, doc) -> Dict[str, Dict]:
         """Match symbols using word boundaries and track context."""
         matched = {}
-        print(f"🔍 Symbol categories loaded: {list(self.symbol_categories.keys())}")
-        print(f"🔍 Total symbols to match: {sum(len(v) for v in self.symbol_categories.values())}")
-        print(f"🔍 First 10 tokens in dream: {[token.text for token in doc[:10]]}")
-        print(f"🔍 First 10 lemmas: {[token.lemma_ for token in doc[:10]]}")
+        pass  # private payload logging removed
+        pass  # private payload logging removed
+        pass  # private payload logging removed
+        pass  # private payload logging removed
 
         for category, symbols in self.symbol_categories.items():
             for token in doc:

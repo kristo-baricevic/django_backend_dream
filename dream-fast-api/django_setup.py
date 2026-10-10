@@ -1,14 +1,10 @@
 import os
 import sys  
 import django
+from pathlib import Path
 
 # Detect environment
-if os.path.exists('/django_backend_dream'):
-    # Docker environment
-    sys.path.insert(0, '/django_backend_dream')
-else:
-    # Local environment
-    sys.path.insert(0, '/Users/kristo/django_backend_dream')
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'mysite.settings')
 django.setup()

@@ -13,7 +13,7 @@ class FeedbackAnalyzer:
         
         user_feedback = AnalysisFeedback.objects.filter(
             user_id=user_id
-        ).select_related('analysis')
+        ).select_related('analysis', 'cumulative_analysis', 'custom_question')
         
         preferences = {
             'preferred_doctors': {},
@@ -23,7 +23,10 @@ class FeedbackAnalyzer:
         
         # Track which doctor styles this user likes
         for feedback in user_feedback:
-            doctor = feedback.analysis.doctor_personality
+            target = feedback.analysis or feedback.cumulative_analysis or feedback.custom_question
+            if target is None or target.user_id != user_id:
+                continue
+            doctor = target.doctor_personality
             if doctor not in preferences['preferred_doctors']:
                 preferences['preferred_doctors'][doctor] = {'liked': 0, 'disliked': 0}
             
@@ -35,7 +38,10 @@ class FeedbackAnalyzer:
         # Track weight preferences
         good_analyses = user_feedback.filter(rating='good')
         for feedback in good_analyses:
-            weights = feedback.analysis.weights
+            target = feedback.analysis or feedback.cumulative_analysis or feedback.custom_question
+            if target is None or target.user_id != user_id:
+                continue
+            weights = target.weights
             # Store weights that this user responded well to
             preferences['preferred_weights'] = weights  # Use their most recent liked config
         

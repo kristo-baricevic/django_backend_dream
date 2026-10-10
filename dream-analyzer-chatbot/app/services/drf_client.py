@@ -1,14 +1,15 @@
 import httpx
 from typing import Dict, List, Optional, Any
 from app.config import settings
+from app.services.session_client import SessionClient
 
 class APIClient:
     """Client for communicating with Django DRF and Dream Analyzer APIs"""
     
-    def __init__(self):
+    def __init__(self, headers):
         self.django_base_url = settings.DJANGO_API_URL
         self.analyzer_base_url = settings.DREAM_ANALYZER_URL
-        self.client = httpx.AsyncClient(timeout=60.0)
+        self.client = SessionClient(headers)
     
     async def close(self):
         """Close the HTTP client"""
@@ -191,5 +192,3 @@ class APIClient:
         )
         response.raise_for_status()
         return response.json()
-
-api_client = APIClient()

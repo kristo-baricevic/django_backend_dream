@@ -1,13 +1,13 @@
 from typing import List, Dict, Any
 import json
 from app.models.schemas import ChatMessage, UIEvent
-from app.services.llm_service import llm_service
-from app.services.drf_client import api_client
+
+
 from openai import AsyncOpenAI
 from app.config import settings
 import httpx
 
-client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+
 
 class DreamAgent:
     """
@@ -15,7 +15,9 @@ class DreamAgent:
     Uses function calling to interact with Django and Dream Analyzer APIs.
     """
     
-    def __init__(self):
+    def __init__(self, api_client):
+        self.api_client = api_client
+        self.client = None
         self.system_prompt = """You are a helpful dream analysis assistant with access to a dream journal system.
 
 IMPORTANT CONVERSATION FLOW FOR NEW DREAMS:
@@ -169,7 +171,7 @@ Be warm, curious, and patient. Help users remember their dreams by asking though
             messages.append({"role": msg.role, "content": msg.content})
         messages.append({"role": "user", "content": user_message})
 
-        response = await client.chat.completions.create(
+        response = await self._provider().chat.completions.create(
             model=settings.OPENAI_MODEL,
             messages=messages,
             tools=self.tools,
@@ -190,7 +192,7 @@ Be warm, curious, and patient. Help users remember their dreams by asking though
             function_name = tool_call.function.name
             function_args = json.loads(tool_call.function.arguments)
             
-            print("TOOL_CALL:", function_name, function_args)
+            pass  # private payload logging removed
 
             function_response = await self._execute_tool(function_name, function_args)
             if isinstance(function_response, dict) and function_response.get("success") is False:
@@ -208,7 +210,7 @@ Be warm, curious, and patient. Help users remember their dreams by asking though
                 for evt in function_response["ui_events"]:
                     collected_events.append(UIEvent(**evt))
 
-        final_response = await client.chat.completions.create(
+        final_response = await self._provider().chat.completions.create(
             model=settings.OPENAI_MODEL,
             messages=messages
         )
@@ -225,27 +227,11 @@ Be warm, curious, and patient. Help users remember their dreams by asking though
                 content = args["content"]
 
                 # 1) Save entry (returns UUID)
-                saved = await api_client.create_journal_entry(content)
+                saved = await self.api_client.create_journal_entry(content)
                 entry_id = saved["id"]
 
                 # 2) Trigger Django's analyzer via the /update/ endpoint
-                base = settings.DJANGO_API_URL.rstrip("/")
-                url = f"{base}/entries/{entry_id}/update/"
-                # async with httpx.AsyncClient(timeout=30) as hc:
-                #     r = await hc.patch(url, json={}) 
-                #     r.raise_for_status()
-                #     updated = r.json()
-
-                # inside save_dream, keep your existing code
-                try:
-                    async with httpx.AsyncClient(timeout=30) as hc:
-                        r = await hc.patch(url, json={})
-                        body = r.text  # capture body for logs
-                        r.raise_for_status()
-                        updated = r.json()
-                except Exception as e:
-                    print(f"PATCH {url} failed: {repr(e)} | status={getattr(r,'status_code',None)} body={body}")
-                    return {"success": False, "error": f"PATCH failed: {getattr(r,'status_code',None)} {body}"}
+                updated = await self.api_client.update_journal_entry(entry_id, content)
 
 
                 return {
@@ -262,7 +248,7 @@ Be warm, curious, and patient. Help users remember their dreams by asking though
 
 
             elif function_name == "analyze_dream":
-                result = await api_client.analyze_dream(args["content"])
+                result = await self.api_client.analyze_dream(args["content"])
                 return {
                     "success": True,
                     "analysis": {
@@ -275,7 +261,7 @@ Be warm, curious, and patient. Help users remember their dreams by asking though
                 }
             
             elif function_name == "search_dreams":
-                result = await api_client.get_journal_entries(search=args["query"])
+                result = await self.api_client.get_journal_entries(search=args["query"])
                 dreams = result.get("results", [])
                 return {
                     "success": True,
@@ -292,26 +278,26 @@ Be warm, curious, and patient. Help users remember their dreams by asking though
                 }
             
             elif function_name == "get_cumulative_analysis":
-                print(f"get_cumulative_analysis")
+                pass  # private payload logging removed
                 limit = args.get("limit", 10)
                 # Get recent entries
                 try:
-                    entries_response = await api_client.get_journal_entries(limit=limit)
+                    entries_response = await self.api_client.get_journal_entries(limit=limit)
                 except Exception as e:
-                    print("get_journal_entries failed:", repr(e))
-                    return {"success": False, "error": str(e)}
+                    pass  # private payload logging removed
+                    return {"success": False, "error": "Operation unavailable."}
 
                 entries = entries_response.get("results", [])
                 
                 # Start cumulative analysis workflow
-                workflow_response = await api_client.get_cumulative_analysis_workflow(entries)
+                workflow_response = await self.api_client.get_cumulative_analysis_workflow(entries)
                 workflow_id = workflow_response.get("workflow_id")
 
                 # Poll for completion (simplified - in production use webhooks)
                 import asyncio
                 for _ in range(30):  # Wait up to 30 seconds
                     await asyncio.sleep(1)
-                    status = await api_client.get_workflow_status(workflow_id)
+                    status = await self.api_client.get_workflow_status(workflow_id)
                     if status.get("status") == "completed":
                         return {
                             "success": True,
@@ -329,11 +315,11 @@ Be warm, curious, and patient. Help users remember their dreams by asking though
                 question = args["question"]
                 
                 # Get recent entries
-                entries_response = await api_client.get_journal_entries(limit=limit)
+                entries_response = await self.api_client.get_journal_entries(limit=limit)
                 entries = entries_response.get("results", [])
                 
                 # Start custom question workflow
-                workflow_response = await api_client.ask_custom_question_workflow(
+                workflow_response = await self.api_client.ask_custom_question_workflow(
                     question, entries
                 )
                 workflow_id = workflow_response.get("workflow_id")
@@ -342,7 +328,7 @@ Be warm, curious, and patient. Help users remember their dreams by asking though
                 import asyncio
                 for _ in range(30):
                     await asyncio.sleep(1)
-                    status = await api_client.get_workflow_status(workflow_id)
+                    status = await self.api_client.get_workflow_status(workflow_id)
                     if status.get("status") == "completed":
                         return {
                             "success": True,
@@ -359,8 +345,15 @@ Be warm, curious, and patient. Help users remember their dreams by asking though
                 return {"success": False, "error": f"Unknown function: {function_name}"}
                 
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": "Operation unavailable."}
     
+    def _provider(self):
+        if self.client is None:
+            if not settings.OPENAI_API_KEY:
+                raise RuntimeError('Configured provider credentials required')
+            self.client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        return self.client
+
     async def stream_response(
         self,
         user_message: str,
@@ -372,10 +365,8 @@ Be warm, curious, and patient. Help users remember their dreams by asking though
         result = await self.process_message(user_message, conversation_history)
         
         # Stream the result word by word for better UX
-        words = result.split()
+        words = result["text"].split()
         for i, word in enumerate(words):
             yield word + (" " if i < len(words) - 1 else "")
             import asyncio
             await asyncio.sleep(0.05)  # Small delay for streaming effect
-
-dream_agent = DreamAgent()

@@ -2,8 +2,14 @@
 from django.urls import path
 from .views import get_data, get_entries, submit_feedback, get_feedback_stats, get_user_preferences, get_user_recommendations, get_entry, create_entry, update_entry, delete_entry, get_workflow_execution
 from . import views
+from . import auth_views
 
 urlpatterns = [
+    path('auth/csrf/', auth_views.csrf_token),
+    path('auth/login/', auth_views.sign_in),
+    path('auth/session/', auth_views.session),
+    path('auth/validate/', auth_views.validate_session),
+    path('auth/logout/', auth_views.sign_out),
     path('data/', get_data, name='get_data'),
     # path('entries/', get_entries, name='get_entries'),
     path('entries/', views.JournalEntryListView.as_view(), name='get_entries'),
